@@ -6,6 +6,8 @@ const { config, poolConfig, migrationConfig } = require('./config');
 const { runMigrations } = require('./migrations');
 let pool;
 (async () => {
+  const startedAt = Date.now();
+  console.log(`Courtside API boot started at ${new Date(startedAt).toISOString()}`);
   const cfg = config();
   migrationConfig();
   if (process.env.DB_AUTO_MIGRATE === 'true') {
@@ -16,9 +18,12 @@ let pool;
   const store = new MysqlStore(pool);
   await store.ready();
   const app = createApp({ ...cfg, store, wechat: createWechat(cfg) });
-  // This service's cloud health probes target container port 80. An inherited
-  // PORT=8080 must not silently move this listener away from those probes.
-  const server = app.listen(80, '0.0.0.0', () => console.log('Courtside API ready'));
+  // Match the cloud service's configured 8080 probe even if PORT is inherited.
+  const server = app.listen(8080, '0.0.0.0', () =>
+    console.log(
+      `Courtside API ready on 8080 at ${new Date().toISOString()} (${Date.now() - startedAt}ms)`,
+    ),
+  );
   const cleanup = setInterval(
     () => store.cleanup().catch(() => console.error('Scheduled cleanup failed')),
     3600000,

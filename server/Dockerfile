@@ -6,5 +6,5 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY migrations ./migrations
 USER node
-EXPOSE 80
+EXPOSE 8080
 CMD ["node", "src/start.js"]
