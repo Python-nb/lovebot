@@ -1,0 +1,735 @@
+<template name="device-card">
+  <view class="device-card"
+    ><view class="device-info"
+      ><text class="device-title">{{connected ? deviceName : '未连接设备'}}</text
+      ><view class="connection-detail" aria-live="polite"
+        ><text class="connection-dot {{connected ? 'is-connected' : ''}}" aria-hidden="true"></text
+        ><text class="connection-label {{connected ? 'is-connected' : ''}}"
+          >{{connected ? '已连接' : '未连接'}}</text
+        ><view wx:if="{{connected}}" class="signal-bars" aria-hidden="true"
+          ><view class="{{signalLevel >= 1 ? 'lit' : ''}}"></view
+          ><view class="{{signalLevel >= 2 ? 'lit' : ''}}"></view
+          ><view class="{{signalLevel >= 3 ? 'lit' : ''}}"></view></view
+        ><text wx:if="{{connected}}" class="signal-copy"
+          >{{signalLabel}}{{signalDbm !== null ? ' · ' + signalDbm + ' dBm' : ''}}</text
+        ></view
+      ></view
+    ><button
+      class="device-connect capsule-button"
+      bindtap="openDevices"
+      disabled="{{busy || state !== 'idle'}}"
+      ><text class="capsule-face">{{connected ? '更换设备' : '连接设备'}}</text></button
+    ></view
+  >
+</template>
+<view class="app-shell theme-{{theme}}">
+  <view wx:if="{{tab === 'home'}}" class="page home-page">
+    <template
+      is="device-card"
+      data="{{connected, deviceName, signalDbm, signalLevel, signalLabel, busy, state}}"
+    />
+    <view class="section-line"
+      ><text class="section-title">训练数据</text><text class="micro-label">设备回传</text></view
+    >
+    <view class="session-card">
+      <view class="accuracy-panel"
+        ><view class="accuracy-copy"
+          ><text class="accuracy-label">命中率</text
+          ><view class="accuracy-number">{{rate}}<text>%</text></view></view
+        ><view class="court-art"
+          ><view class="court-circle"></view><view class="court-key"></view
+          ><view class="court-hoop"></view><view class="court-arc"></view></view
+      ></view>
+      <view class="session-metrics"
+        ><view
+          ><text class="muted small">发球数</text
+          ><text class="metric-number">{{shots}}<text> 球</text></text></view
+        ><view
+          ><text class="muted small">进球数</text
+          ><text class="metric-number">{{hits}}<text> 球</text></text></view
+        ><view
+          ><text class="muted small">训练时长</text
+          ><text class="timer-number">{{clock}}</text></view
+        ></view
+      >
+    </view>
+    <button class="screen-entry" bindtap="openScreen"
+      ><view class="screen-icon"><image src="/assets/icons/device-tv.png" /></view
+      ><view class="grow"
+        ><text class="entry-title">训练大屏</text
+        ><text class="small muted">实时训练数据 · 可镜像投屏到电视</text></view
+      ><text class="arrow">›</text></button
+    >
+    <view class="section-line"><text class="section-title">训练模式</text></view>
+    <view class="modes">
+      <view
+        wx:for="{{modes}}"
+        wx:key="id"
+        class="mode-option {{mode === item.id ? 'selected' : ''}}"
+      >
+        <button
+          data-id="{{item.id}}"
+          bindtap="chooseMode"
+          disabled="{{state !== 'idle' || busy}}"
+          class="mode-row {{mode === item.id ? 'selected' : ''}}"
+          aria-label="选择{{item.label}}"
+          aria-pressed="{{mode === item.id}}"
+          ><text class="mode-title">{{item.label}}</text
+          ><text wx:if="{{mode === item.id}}" class="mode-check">已选择</text></button
+        >
+        <view wx:if="{{item.id === 'time'}}" class="input-group"
+          ><input
+            aria-label="目标时长，分钟"
+            type="number"
+            value="{{targetTime}}"
+            data-field="targetTime"
+            bindinput="targetInput"
+            disabled="{{state !== 'idle' || busy}}"
+            maxlength="3"
+          /><text>分钟</text></view
+        >
+        <view wx:if="{{item.id === 'count'}}" class="input-group"
+          ><input
+            aria-label="目标发球数"
+            type="number"
+            value="{{targetCount}}"
+            data-field="targetCount"
+            bindinput="targetInput"
+            disabled="{{state !== 'idle' || busy}}"
+            maxlength="4"
+          /><text>球</text></view
+        >
+      </view>
+    </view>
+    <view class="training-actions"
+      ><button class="primary start-button" bindtap="start" disabled="{{state !== 'idle' || busy}}"
+        ><image src="/assets/icons/player-play.png" />{{state === 'running' ? '训练进行中' :
+        '开始训练'}}</button
+      ><button class="secondary" bindtap="finish" disabled="{{state === 'idle' || busy}}"
+        >{{state === 'review' || state === 'interrupted' ? '核对 / 保存' : '结束 / 保存'}}</button
+      ></view
+    >
+    <view class="session-status"
+      ><text class="status-dot {{state === 'running' ? 'real-dot' : ''}}"></text
+      ><text>{{status}}</text></view
+    >
+    <button
+      wx:if="{{state === 'review' || state === 'interrupted'}}"
+      class="discard-button"
+      bindtap="discard"
+      >放弃本次未保存训练</button
+    >
+    <text class="safety-note"
+      >训练时请保持小程序在前台。请远离出球口，紧急情况优先使用机器实体停止开关。</text
+    >
+    <view wx:if="{{recent.length}}" class="recent-block"
+      ><view class="section-line"
+        ><text class="section-title">最近的努力</text
+        ><button class="text-button" data-id="stats" bindtap="switchTab">查看全部 ↗</button></view
+      ><view class="record-row" wx:for="{{recent}}" wx:key="id"
+        ><view
+          ><text class="record-title">{{item.title}}</text
+          ><text class="muted small">{{item.date}}</text></view
+        ><view class="align-right"
+          ><text class="record-title">{{item.hits}} / {{item.shots}} 球</text
+          ><text class="muted small">命中率 {{item.rate}}%</text></view
+        ></view
+      ></view
+    >
+  </view>
+
+  <view wx:if="{{tab === 'rank'}}" class="page">
+    <view class="page-heading"
+      ><view
+        ><text class="page-title">排行榜</text
+        ><text class="small muted">个人训练榜 · {{sourceLabel}} · 仅本机成绩</text></view
+      ><button class="help-button" bindtap="help" aria-label="连接和安全帮助"
+        ><text class="help-face" aria-hidden="true">?</text></button
+      ></view
+    >
+    <view class="pills capsule-group"
+      ><button
+        wx:for="{{metrics}}"
+        wx:key="id"
+        class="pill capsule-button {{rankMetric === item.id ? 'active' : ''}}"
+        data-field="rankMetric"
+        data-value="{{item.id}}"
+        bindtap="rankFilter"
+        aria-pressed="{{rankMetric === item.id}}"
+        ><text class="capsule-face">{{item.label}}</text></button
+      ></view
+    >
+    <view class="pills capsule-group"
+      ><button
+        wx:for="{{periods}}"
+        wx:key="value"
+        class="pill capsule-button {{rankPeriod === item.value ? 'active' : ''}}"
+        data-field="rankPeriod"
+        data-value="{{item.value}}"
+        bindtap="rankFilter"
+        aria-pressed="{{rankPeriod === item.value}}"
+        ><text class="capsule-face">{{item.label}}</text></button
+      ></view
+    >
+    <view wx:if="{{!ranking.length}}" class="empty-card"
+      ><image
+        class="empty-illustration"
+        src="/assets/brand/training-empty.png"
+        mode="aspectFit"
+      /><text class="muted">暂无训练数据</text
+      ><button class="text-button" data-id="home" bindtap="switchTab"
+        >完成一次训练，记录第一份成绩 ›</button
+      ></view
+    >
+    <view wx:else class="rank-list"
+      ><view wx:for="{{ranking}}" wx:key="id" class="rank-row"
+        ><text class="rank-number {{index === 0 ? 'first-place' : ''}}">{{item.rank}}</text
+        ><view class="grow"
+          ><text class="record-title">{{item.title}}</text
+          ><text class="muted small">{{item.date}}</text></view
+        ><text class="rank-score">{{item.score}}</text></view
+      ></view
+    >
+    <view class="note-card"
+      ><text class="section-title">我的最佳成绩</text
+      ><text class="personal-best">{{ranking.length ? ranking[0].score : '暂无成绩'}}</text
+      ><text class="muted small">个人单次训练排行，非全网排名。</text></view
+    >
+  </view>
+
+  <view wx:if="{{tab === 'stats'}}" class="page">
+    <view class="stats-range"
+      ><view class="segmented capsule-group"
+        ><button
+          wx:for="{{ranges}}"
+          wx:key="value"
+          class="range-button capsule-button {{days === item.value ? 'active' : ''}}"
+          data-value="{{item.value}}"
+          bindtap="selectRange"
+          aria-pressed="{{days === item.value}}"
+          ><text class="range-pill capsule-face">{{item.label}}</text></button
+        ></view
+      ><text class="muted small">{{sourceLabel}}</text></view
+    >
+    <view class="stat-grid"
+      ><view class="stat-tile orange-tile"
+        ><text class="muted">发球数</text
+        ><text class="stat-value">{{total.shots}}<text> 球</text></text
+        ><text class="tile-index">01</text></view
+      ><view class="stat-tile"
+        ><text class="muted">进球数</text
+        ><text class="stat-value">{{total.hits}}<text> 球</text></text
+        ><text class="tile-index">02</text></view
+      ><view class="stat-tile"
+        ><text class="muted">命中率</text
+        ><text class="stat-value">{{total.rate}}<text> %</text></text
+        ><text class="tile-index">03</text></view
+      ><view class="stat-tile"
+        ><text class="muted">训练时长</text
+        ><text class="stat-value">{{total.minutes}}<text> 分钟</text></text
+        ><text class="tile-index">04</text></view
+      ></view
+    >
+    <view class="chart-card"
+      ><view class="section-line"
+        ><text class="section-title">努力的轨迹</text
+        ><text class="muted small">{{total.sessions}} 次训练</text></view
+      ><view class="chart-tabs capsule-group"
+        ><button
+          wx:for="{{metrics}}"
+          wx:key="id"
+          class="capsule-button {{metric === item.id ? 'active' : ''}}"
+          data-id="{{item.id}}"
+          bindtap="selectMetric"
+          aria-pressed="{{metric === item.id}}"
+          ><text class="capsule-face">{{item.label}}</text></button
+        ></view
+      ><view class="chart-unit">单位：{{chartUnit}} <text>最高 {{chartMax}}</text></view
+      ><view class="chart"
+        ><view class="chart-grid"><view></view><view></view><view></view><view></view></view
+        ><view wx:if="{{!total.sessions}}" class="chart-empty"
+          ><text>还没有训练足迹</text
+          ><text class="small muted">完成训练后，你的曲线将在这里延伸。</text></view
+        ><view class="bars"
+          ><view wx:for="{{points}}" wx:key="key" class="bar-column"
+            ><text wx:if="{{item.value > 0}}" class="bar-value">{{item.value}}</text
+            ><view class="bar" style="{{item.barStyle}}"></view
+            ><text class="bar-label">{{item.showLabel ? item.label : ''}}</text></view
+          ></view
+        ></view
+      ><view class="chart-caption"
+        >{{days === 365 ? '按月汇总' : '按日汇总'}} · 命中率按总进球 / 总发球计算</view
+      ></view
+    >
+    <view class="calendar-card"
+      ><view class="calendar-heading"
+        ><button data-step="-1" bindtap="monthChange" aria-label="上一个月">‹</button
+        ><text class="section-title">{{monthLabel}}</text
+        ><button data-step="1" bindtap="monthChange" aria-label="下一个月">›</button></view
+      ><view class="weekdays"
+        ><text>一</text><text>二</text><text>三</text><text>四</text><text>五</text><text>六</text
+        ><text>日</text></view
+      ><view class="calendar-grid"
+        ><button
+          wx:for="{{calendar}}"
+          wx:key="key"
+          disabled="{{item.empty}}"
+          data-key="{{item.key}}"
+          bindtap="pickDay"
+          class="calendar-day {{item.trained ? 'trained' : ''}} {{item.today ? 'today' : ''}} {{item.selected ? 'selected-day' : ''}}"
+          >{{item.day}}<view wx:if="{{item.trained}}" class="calendar-dot"></view></button></view
+      ><text class="muted small calendar-note">橙色标记 = 当天有训练 · 点击日期查看记录</text></view
+    >
+    <view wx:if="{{selectedDay}}" class="day-records"
+      ><view class="section-line"><text class="section-title">{{selectedDay}}</text></view
+      ><text wx:if="{{!dayRows.length}}" class="muted">这天还没有保存的训练记录。</text
+      ><view wx:for="{{dayRows}}" wx:key="id" class="record-row"
+        ><view
+          ><text class="record-title">{{item.title}}</text
+          ><text class="muted small">{{item.duration}}</text></view
+        ><view class="align-right"
+          ><text class="record-title">{{item.hits}} / {{item.shots}} 球</text
+          ><text class="muted small">{{item.rate}}%</text></view
+        ></view
+      ></view
+    >
+  </view>
+
+  <view wx:if="{{tab === 'profile'}}" class="page">
+    <view class="page-heading"
+      ><text class="page-title">我的</text><text class="small muted">爱冠篮 · 篮球训练</text></view
+    >
+    <view class="profile-card"
+      ><view class="avatar"><image src="/assets/brand/app-icon.png" mode="aspectFill" /></view
+      ><view class="grow"
+        ><text class="profile-name">{{nickname}}</text
+        ><text class="muted small">保持专注，让投篮成为习惯。</text></view
+      ><button class="edit-button" bindtap="rename" aria-label="修改训练昵称"
+        ><image src="/assets/icons/pencil.png" /></button
+    ></view>
+    <view class="profile-summary"
+      ><view><text>{{records.length}}</text><text class="muted small">累计训练 / 次</text></view
+      ><view
+        ><text>{{accountUser ? '账号数据' : '仅本机'}}</text
+        ><text class="muted small">训练记录存储</text></view
+      ></view
+    >
+    <view class="account-card">
+      <view class="section-line">
+        <view class="grow"
+          ><text class="record-title">{{accountUser ? '账号与安全' : '登录，保存你的训练'}}</text
+          ><text class="muted small">{{accountSubtitle}}</text></view
+        >
+        <button
+          class="capsule-button account-entry"
+          bindtap="openAccount"
+          disabled="{{busy || state !== 'idle'}}"
+          ><text class="capsule-face">{{accountUser ? '管理账号' : '去登录'}}</text></button
+        >
+      </view>
+      <text class="muted small">{{accountStatus}} · {{syncLabel}}</text>
+      <button
+        wx:if="{{accountUser}}"
+        class="account-sync"
+        bindtap="syncAccountRecords"
+        disabled="{{busy || state !== 'idle'}}"
+        >{{busy ? '正在处理…' : '同步训练记录'}}</button
+      >
+    </view>
+    <view class="section-line"><text class="section-title">我的发球机</text></view>
+    <template
+      is="device-card"
+      data="{{connected, deviceName, signalDbm, signalLevel, signalLabel, busy, state}}"
+    />
+    <view class="settings-list profile-settings"
+      ><button
+        wx:if="{{connected}}"
+        class="setting-row"
+        bindtap="disconnect"
+        disabled="{{state !== 'idle' || busy}}"
+        ><text class="record-title">断开当前设备</text><text class="arrow">↗</text></button
+      ><button class="setting-row" bindtap="help"
+        ><text class="record-title">连接帮助与使用安全</text><text class="arrow">↗</text></button
+      ><button class="setting-row" bindtap="privacy"
+        ><text class="record-title">用户隐私保护指引</text><text class="arrow">›</text></button
+      ><button class="setting-row" bindtap="openDataInfo"
+        ><text class="record-title">数据使用与管理</text><text class="arrow">›</text></button
+      ></view
+    >
+    <view class="theme-setting"
+      ><text class="record-title">外观主题</text
+      ><view class="theme-options capsule-group"
+        ><button
+          wx:for="{{themeChoices}}"
+          wx:key="id"
+          bindtap="selectTheme"
+          data-id="{{item.id}}"
+          class="theme-choice capsule-button {{themePreference === item.id ? 'active' : ''}}"
+          aria-pressed="{{themePreference === item.id}}"
+          ><text class="capsule-face">{{item.label}}</text></button
+        ></view
+      ></view
+    >
+    <view class="manifesto"
+      ><image
+        class="manifesto-ball"
+        src="/assets/brand/profile-basketball.png"
+        mode="aspectFit"
+        aria-hidden="true"
+      />
+      <text>不必每球都中。<text class="muted">但每一球，都要认真。</text></text></view
+    ><text class="version-label">爱冠篮 · 篮球训练 1.0</text>
+  </view>
+
+  <view class="bottom-nav"
+    ><button
+      wx:for="{{tabs}}"
+      wx:key="id"
+      data-id="{{item.id}}"
+      bindtap="switchTab"
+      class="nav-item {{tab === item.id ? 'nav-active' : ''}}"
+      ><image src="/assets/icons/{{item.icon}}{{tab === item.id ? '-active' : ''}}.png" /><text
+        >{{item.label}}</text
+      ><view wx:if="{{tab === item.id}}" class="nav-indicator"></view></button
+  ></view>
+
+  <view wx:if="{{deviceSheet}}" class="modal-scrim"
+    ><view class="device-sheet"
+      ><view class="sheet-handle"></view
+      ><view class="section-line"
+        ><view
+          ><text class="section-title">连接发球机</text
+          ><text class="muted small">靠近设备，并确认电源已开启。</text></view
+        ><button class="close-button" bindtap="closeDevices" aria-label="关闭设备搜索"
+          >×</button
+        ></view
+      ><text class="scan-label">{{scanning ? '正在搜索附近的蓝牙设备…' : '搜索已结束'}}</text
+      ><view wx:if="{{!devices.length}}" class="device-empty"
+        ><image src="/assets/icons/bluetooth.png" /><text>还未发现设备</text
+        ><text class="muted small">检查蓝牙、附近设备权限与设备电源</text></view
+      ><scroll-view scroll-y="true" class="device-results"
+        ><button
+          wx:for="{{devices}}"
+          wx:key="deviceId"
+          class="discovered-device"
+          data-id="{{item.deviceId}}"
+          bindtap="connectDevice"
+          disabled="{{busy}}"
+          ><view
+            ><text class="record-title">{{item.name}}</text
+            ><text class="muted small">{{item.signal}} · {{item.RSSI}} dBm</text></view
+          ><text class="orange">连接 ↗</text></button
+        ></scroll-view
+      ><button class="primary" bindtap="scanDevices" disabled="{{scanning || busy}}"
+        >{{busy ? '正在处理…' : scanning ? '搜索中…' : '重新搜索'}}</button
+      ><text class="safety-note"
+        >列出有名称的 BLE 设备；连接时核验协议服务和特征。不会自动启动机器。</text
+      ></view
+    ></view
+  >
+
+  <view wx:if="{{accountSheet}}" class="modal-scrim account-scrim">
+    <view class="data-sheet account-sheet" role="dialog" aria-label="账号与安全">
+      <view class="section-line"
+        ><text class="section-title"
+          >{{accountView === 'login' || accountView === 'password' ? '登录爱冠篮' :
+          '账号与安全'}}</text
+        ><button
+          class="close-button"
+          bindtap="closeAccount"
+          aria-label="关闭账号面板"
+          disabled="{{busy}}"
+          >×</button
+        ></view
+      >
+      <scroll-view scroll-y="true" class="data-content account-content">
+        <block wx:if="{{accountView === 'login' || accountView === 'password'}}">
+          <text class="account-title">每次练习，都有记录。</text>
+          <text class="muted small"
+            >登录后可将已核对的训练记录同步到本人账号。游客模式仍可使用蓝牙训练，不强制提供手机号。</text
+          >
+          <view class="capsule-group account-tabs">
+            <button
+              class="capsule-button {{accountView === 'login' ? 'selected' : ''}}"
+              aria-pressed="{{accountView === 'login'}}"
+              data-view="login"
+              bindtap="accountView"
+              ><text class="capsule-face">微信登录</text></button
+            >
+            <button
+              class="capsule-button {{accountView === 'password' ? 'selected' : ''}}"
+              aria-pressed="{{accountView === 'password'}}"
+              data-view="password"
+              bindtap="accountView"
+              ><text class="capsule-face">手机号密码</text></button
+            >
+          </view>
+          <block wx:if="{{accountView === 'password'}}">
+            <label class="account-label" for="login-phone">手机号</label>
+            <input
+              id="login-phone"
+              class="account-input"
+              type="number"
+              maxlength="11"
+              value="{{phoneInput}}"
+              data-field="phoneInput"
+              bindinput="accountInput"
+              placeholder="已在微信账号中验证绑定的手机号"
+              aria-label="登录手机号"
+              disabled="{{busy}}"
+            />
+            <label class="account-label" for="login-password">登录密码</label>
+            <input
+              id="login-password"
+              class="account-input"
+              password="{{!showPassword}}"
+              maxlength="64"
+              value="{{loginPassword}}"
+              data-field="loginPassword"
+              bindinput="accountInput"
+              placeholder="请输入登录密码"
+              aria-label="登录密码"
+              disabled="{{busy}}"
+            />
+            <button class="account-text-button" bindtap="togglePassword"
+              >{{showPassword ? '隐藏密码' : '显示密码'}}</button
+            >
+            <text class="muted small"
+              >首次使用请先微信登录，验证绑定手机号并设置密码。忘记密码可微信登录后重新验证手机号重置。</text
+            >
+          </block>
+          <view class="account-consent">
+            <button
+              class="consent-toggle"
+              bindtap="toggleAccountConsent"
+              aria-role="checkbox"
+              aria-checked="{{accountAccepted}}"
+              disabled="{{busy}}"
+              ><text>{{accountAccepted ? '✓' : ''}}</text
+              ><text>我已阅读并同意账号与数据说明</text></button
+            >
+            <view class="account-links"
+              ><button bindtap="privacy">隐私保护指引</button
+              ><button bindtap="openDataInfo">账号与数据说明</button></view
+            >
+          </view>
+          <button
+            wx:if="{{accountView === 'login'}}"
+            class="primary account-primary"
+            bindtap="loginWechat"
+            loading="{{busy}}"
+            disabled="{{busy || !accountAccepted}}"
+            >微信一键登录</button
+          >
+          <button
+            wx:else
+            class="primary account-primary"
+            bindtap="loginWithPassword"
+            loading="{{busy}}"
+            disabled="{{busy || !accountAccepted}}"
+            >登录</button
+          >
+          <button
+            wx:if="{{accountUser}}"
+            class="account-text-button"
+            data-view="security"
+            bindtap="accountView"
+            >返回当前账号</button
+          >
+          <text class="muted small"
+            >登录不等于授权手机号。不会读取微信昵称、头像；不提供公开排行榜。</text
+          >
+        </block>
+        <block wx:elif="{{accountView === 'security'}}">
+          <text class="account-title">{{accountUser.nickname}}</text>
+          <text class="muted small"
+            >{{accountStatus}} · {{accountUser.phoneMasked || '尚未绑定手机号'}}</text
+          >
+          <text class="account-label">手机号与密码</text>
+          <button
+            wx:if="{{!accountUser.phoneMasked ? phoneEnabled : false}}"
+            class="outline account-primary"
+            open-type="getPhoneNumber"
+            bindgetphonenumber="bindAccountPhone"
+            disabled="{{busy}}"
+            >授权绑定手机号</button
+          >
+          <text wx:if="{{!phoneEnabled}}" class="muted small"
+            >运营方尚未开通微信手机号授权。微信登录仍可使用；手机号密码需开通验证能力后设置。</text
+          >
+          <button
+            wx:if="{{accountUser.phoneMasked}}"
+            class="setting-row"
+            data-view="change"
+            bindtap="accountView"
+            disabled="{{busy}}"
+            ><text>{{accountUser.hasPassword ? '修改登录密码' : '设置登录密码'}}</text
+            ><text>›</text></button
+          >
+          <button
+            wx:if="{{phoneEnabled ? accountUser.hasPassword : false}}"
+            class="setting-row"
+            data-view="reset"
+            bindtap="accountView"
+            disabled="{{busy}}"
+            ><text>忘记密码，验证手机号重置</text><text>›</text></button
+          >
+          <button class="setting-row" data-view="login" bindtap="accountView" disabled="{{busy}}"
+            ><text>重新微信登录 / 切换账号</text><text>›</text></button
+          >
+          <text class="muted small"
+            >首次设密码、绑定、重置和注销需 5
+            分钟内的微信登录；修改已有密码需原密码。改密后其他会话会失效。</text
+          >
+          <text class="account-label">我的数据</text>
+          <button class="setting-row" bindtap="syncAccountRecords" disabled="{{busy}}"
+            ><text>同步本人训练记录</text><text>↗</text></button
+          >
+          <button
+            wx:if="{{guestCount}}"
+            class="setting-row"
+            bindtap="importGuestRecords"
+            disabled="{{busy}}"
+            ><text>导入游客记录（{{guestCount}} 条）</text><text>›</text></button
+          >
+          <text class="muted small"
+            >只上传本账号待同步的、由你确认的 BLE
+            记录。游客数据需先确认归属再导入；本机缓存不是云端已保存的证明。</text
+          >
+          <button class="setting-row account-danger" bindtap="deleteCloudData" disabled="{{busy}}"
+            >删除账号训练记录</button
+          >
+          <button class="setting-row" bindtap="logoutAccount" disabled="{{busy}}"
+            >退出当前账号</button
+          >
+          <button class="setting-row account-danger" bindtap="deleteAccount" disabled="{{busy}}"
+            >注销账号</button
+          >
+        </block>
+        <block wx:else>
+          <text class="account-title"
+            >{{accountView === 'reset' ? '重置登录密码' : accountUser.hasPassword ? '修改登录密码' :
+            '设置登录密码'}}</text
+          >
+          <text class="muted small"
+            >{{accountUser.phoneMasked}} · 密码需 10–64 位，包含字母和数字，不含空格。</text
+          >
+          <button
+            wx:if="{{accountView === 'reset' ? !resetPhoneReady : false}}"
+            class="primary account-primary"
+            open-type="getPhoneNumber"
+            bindgetphonenumber="authorizeResetPhone"
+            disabled="{{busy || !phoneEnabled}}"
+            >先授权已绑定手机号</button
+          >
+          <block wx:if="{{accountView !== 'reset' || resetPhoneReady}}">
+            <block wx:if="{{accountView !== 'reset' ? accountUser.hasPassword : false}}"
+              ><label class="account-label" for="current-password">原密码</label
+              ><input
+                id="current-password"
+                class="account-input"
+                password="{{!showPassword}}"
+                maxlength="64"
+                value="{{currentPassword}}"
+                data-field="currentPassword"
+                bindinput="accountInput"
+                aria-label="原密码"
+                disabled="{{busy}}"
+            /></block>
+            <label class="account-label" for="new-password">新密码</label
+            ><input
+              id="new-password"
+              class="account-input"
+              password="{{!showPassword}}"
+              maxlength="64"
+              value="{{newPassword}}"
+              data-field="newPassword"
+              bindinput="accountInput"
+              aria-label="新密码"
+              disabled="{{busy}}"
+            />
+            <label class="account-label" for="confirm-password">确认新密码</label
+            ><input
+              id="confirm-password"
+              class="account-input"
+              password="{{!showPassword}}"
+              maxlength="64"
+              value="{{confirmPassword}}"
+              data-field="confirmPassword"
+              bindinput="accountInput"
+              aria-label="确认新密码"
+              disabled="{{busy}}"
+            />
+            <button class="account-text-button" bindtap="togglePassword"
+              >{{showPassword ? '隐藏密码' : '显示密码'}}</button
+            >
+            <button
+              class="primary account-primary"
+              bindtap="saveAccountPassword"
+              loading="{{busy}}"
+              disabled="{{busy}}"
+              >{{accountView === 'reset' ? '验证并重置密码' : '保存密码'}}</button
+            >
+          </block>
+          <button
+            class="account-text-button"
+            data-view="security"
+            bindtap="accountView"
+            disabled="{{busy}}"
+            >返回账号管理</button
+          >
+        </block>
+      </scroll-view>
+    </view>
+  </view>
+
+  <view wx:if="{{dataInfoOpen}}" class="modal-scrim data-scrim">
+    <view class="data-sheet" role="dialog" aria-label="数据使用与管理">
+      <view class="section-line">
+        <text class="section-title">数据使用与管理</text>
+        <button class="close-button" bindtap="closeDataInfo" aria-label="关闭数据说明">×</button>
+      </view>
+      <scroll-view scroll-y="true" class="data-content">
+        <text class="muted small"
+          >更新日期：2026 年 10 月 26
+          日。本说明介绍当前版本的实际处理方式，不替代微信平台展示的正式隐私保护指引。</text
+        >
+        <view wx:for="{{dataSections}}" wx:key="title" class="data-section">
+          <text class="record-title">{{item.title}}</text>
+          <text class="data-paragraph">{{item.content}}</text>
+        </view>
+        <button class="data-link" bindtap="privacy">查看正式《用户隐私保护指引》 ›</button>
+        <text class="muted small"
+          >运营主体和隐私联系渠道以正式指引及小程序更多资料页的公示为准。如指引暂不可用，请稍后重试或通过小程序右上角“…”查看更多资料。</text
+        >
+        <button class="data-delete" bindtap="deleteRecords" disabled="{{busy || state !== 'idle'}}"
+          >删除本机训练记录</button
+        >
+        <text class="muted small"
+          >仅删除当前身份的本机缓存与待同步成绩，不影响其他账号或云端；下次同步可下载云端已有记录。未同步数据删除后无法恢复，不发送蓝牙指令；训练请先结束并核对。</text
+        >
+      </scroll-view>
+    </view>
+  </view>
+
+  <view wx:if="{{fullscreen}}" class="fullscreen-panel"
+    ><view class="screen-top"
+      ><view class="brand"
+        ><image class="brand-logo" src="/assets/brand/app-icon.png" /><text>爱冠篮</text></view
+      ><button class="outline compact" bindtap="closeScreen">返回训练 ×</button></view
+    ><view class="big-screen-body"
+      ><text class="orange screen-mode"
+        >设备回传 · {{state === 'running' ? '本次训练' : '当前数据'}}</text
+      ><view class="big-rate">{{rate}}<text>%</text></view
+      ><text class="muted">命中率 / ACCURACY</text
+      ><view class="big-metrics"
+        ><view><text>{{shots}}</text><text class="muted">发球数</text></view
+        ><view><text>{{hits}}</text><text class="muted">进球数</text></view
+        ><view><text>{{clock}}</text><text class="muted">训练时长</text></view></view
+      ></view
+    ><view class="screen-bottom"
+      ><text class="muted small">{{status}}</text
+      ><button class="text-button" bindtap="castHelp">如何显示到电视 ↗</button></view
+    ></view
+  >
+</view>

@@ -1,21 +1,31 @@
 {
-  "name": "wxcloudrun-express",
-  "version": "1.0.0",
-  "description": "微信云托管 express 框架模版",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
-  "author": "",
-  "license": "Apache-2.0",
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.16.4",
-    "morgan": "^1.10.0",
-    "mysql2": "^2.3.2",
-    "sequelize": "^6.8.0"
-  },
+  "name": "courtside-miniprogram",
+  "version": "0.1.0",
+  "private": true,
   "engines": {
-    "node": ">=12.0.0"
+    "node": "^20.19.0 || ^22.13.0 || >=24"
+  },
+  "description": "爱冠篮篮球训练微信小程序，真实设备 BLE 控制与本机训练记录",
+  "scripts": {
+    "start": "npm --prefix server start",
+    "migrate": "npm --prefix server run migrate",
+    "test": "node --test tests/*.test.js",
+    "test:server": "npm --prefix server test",
+    "preview:build": "node scripts/build-preview.js",
+    "check": "node scripts/check.js",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write \"miniprogram/**/*.{js,json,wxss,wxml}\" \"server/{src,test}/**/*.js\" server/package.json \"scripts/*.js\" \"tests/*.js\" eslint.config.js package.json project.config.json .prettierrc.json",
+    "format:check": "prettier --check \"miniprogram/**/*.{js,json,wxss,wxml}\" \"server/{src,test}/**/*.js\" server/package.json \"scripts/*.js\" \"tests/*.js\" eslint.config.js package.json project.config.json .prettierrc.json",
+    "assets:check": "node scripts/check-package.js",
+    "quality": "npm run check && npm run lint && npm run format:check && npm run assets:check && npm test && npm run test:server",
+    "wechat:check": "node scripts/wechat-devtools.js check",
+    "wechat:open": "node scripts/wechat-devtools.js open"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.13.0",
+    "globals": "^16.5.0",
+    "linkedom": "^0.18.12",
+    "prettier": "^3.9.10"
   }
 }

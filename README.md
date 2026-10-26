@@ -1,122 +1,65 @@
-# wxcloudrun-express
+# 爱冠篮 · lovebot
 
-[![GitHub license](https://img.shields.io/github/license/WeixinCloud/wxcloudrun-express)](https://github.com/WeixinCloud/wxcloudrun-express)
-![GitHub package.json dependency version (prod)](https://img.shields.io/github/package-json/dependency-version/WeixinCloud/wxcloudrun-express/express)
-![GitHub package.json dependency version (prod)](https://img.shields.io/github/package-json/dependency-version/WeixinCloud/wxcloudrun-express/sequelize)
+原生微信小程序与 Express/MySQL 账号服务同仓库：连接篮球发球机、现场核对训练成绩，并可手动同步到本人账号。
 
-微信云托管 Node.js Express 框架模版，实现简单的计数器读写接口，使用云托管 MySQL 读写、记录计数值。
+## 项目定位
 
-![](https://qcloudimg.tencent-cloud.cn/raw/be22992d297d1b9a1a5365e606276781.png)
+面向生产用途的开发代码，不含模拟设备、假登录、虚构成绩或全网排行。BLE 安全依赖真实交互 V2 设备验收，代码检查通过不代表已上线。
+
+用户指定仓库为 [Python-nb/lovebot](https://github.com/Python-nb/lovebot)。原微信云托管计数器模板已替换，原文件可从初始提交恢复；保留腾讯 MIT LICENSE。旧项目目录保留，后续统一在本仓库开发。
 
 ## 快速开始
 
-前往 [微信云托管快速开始页面](https://cloud.weixin.qq.com/cloudrun/onekey)，选择相应语言的模板，根据引导完成部署。
-
-## 本地调试
-下载代码在本地调试，请参考[微信云托管本地调试指南](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/)
-
-## 实时开发
-代码变动时，不需要重新构建和启动容器，即可查看变动后的效果。请参考[微信云托管实时开发指南](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/dev.html)
-
-## Dockerfile最佳实践
-请参考[如何提高项目构建效率](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/scene/build/speed.html)
-
-## 项目结构说明
-
-```
-.
-├── Dockerfile
-├── README.md
-├── container.config.json
-├── db.js
-├── index.js
-├── index.html
-├── package.json
+```sh
+npm ci
+npm ci --prefix server
+npm run quality
+npm run preview:build
 ```
 
-- `index.js`：项目入口，实现主要的读写 API
-- `db.js`：数据库相关实现，使用 `sequelize` 作为 ORM
-- `index.html`：首页代码
-- `package.json`：Node.js 项目定义文件
-- `container.config.json`：模板部署「服务设置」初始化配置（二开请忽略）
-- `Dockerfile`：容器配置文件
+用微信开发者工具导入仓库根目录，`project.config.json` 指向 `miniprogram/`，AppID 为 `wx84f4e196d257238d`。小程序自身不需要 npm 构建；根依赖用于开发，后端依赖独立安装。浏览器预览不能调用真实微信登录、手机号或蓝牙，不会伪造授权。
 
-## 服务 API 文档
+## 当前真实能力
 
-### `GET /api/count`
+| 能力 | 当前代码 | 验证边界 |
+| --- | --- | --- |
+| BLE 与训练 | 扫描、核验、启停、现场确认、草稿、三模式 | 离线回归；厂商歧义及双端真机待验收 |
+| 微信登录 | wx.login code 经服务端向微信核验、业务会话 | 离线接口测试；真实云端未联调 |
+| 手机号密码 | 微信授权绑定后设密码、密码登录、原密码修改、手机号重置 | 需微信主体资格及手机号能力开通，不提供假验证码 |
+| 数据服务 | MySQL 按账号隔离；显式同步/游客导入、删除记录、注销 | 离线 API/客户端测试；真实 MySQL 迁移未执行 |
+| 界面 | 浅深色/系统、统一胶囊、共享设备状态、3 秒 Toast | 旧版有模拟器证据；登录布局尚需真机复验 |
 
-获取当前计数
+环境 ID `prod-d5g0ea4ci0a964b1a` 已由用户提供并写入客户端公开路由配置；服务名称 `express-7wuk` 已从用户截图确认并填写。容器版本、密钥和数据库就绪尚未确认，`miniprogram/config/service.js` 的 `enabled` 保持 `false`，不会发送真实账号请求。对象存储未接入，账号/训练记录不需要它。
 
-#### 请求参数
+登录路径：主动同意说明 → 微信登录 → 主动授权绑定手机号 → 设置密码；以后可手机号密码登录。忘记密码需近期微信登录和再次授权同一手机号。微信登录和游客训练不强制手机号。
 
-无
+## 仓库结构
 
-#### 响应结果
+| 路径 | 职责 |
+| --- | --- |
+| `miniprogram/` | 小程序运行源码及压缩 PNG 素材 |
+| `server/` | 后端、MySQL 建表脚本、接口与存储测试 |
+| `Dockerfile` | 从仓库根构建后端，端口 8080，非 root 运行 |
+| `scripts/`、`tests/` | 静态检查、离线预览与客户端回归 |
+| `docs/` | 规则、部署步骤及分层验证记录 |
+| `design-assets/` | 包外 GPT 原图，不进入后端镜像或小程序运行包 |
 
-- `code`：错误码
-- `data`：当前计数值
+## 文档导航
 
-##### 响应结果示例
+- [项目规则](AGENTS.md) · [文档导航](docs/README.md)
+- [账号服务部署与接口](docs/ACCOUNT_SERVICE.md)
+- [开发规范](docs/CODING_STANDARDS.md) · [微信隐私与发布规则](docs/WECHAT_COMPLIANCE.md)
+- [设备协议与安全](docs/DEVICE_PROTOCOL.md) · [素材与提示词](docs/ASSETS.md)
+- [验证记录](docs/VALIDATION.md) · [发布检查单](docs/RELEASE.md)
 
-```json
-{
-  "code": 0,
-  "data": 42
-}
-```
+## 安全边界
 
-#### 调用示例
+不自动重试 BLE 或结果不确定的账号写操作。切后台/断连不会恢复发球，必须现场确认停机。账号操作在训练或待核对时锁定。游客与每个账号缓存/草稿隔离，登录不静默导入；退出不会清掉未同步记录。
 
-```
-curl https://<云托管服务域名>/api/count
-```
+AppSecret、HMAC 密钥及数据库凭据仅放云托管密钥配置，不写入小程序、Git 或日志，不向聊天发送。MySQL 保持内网，使用专用数据库及最小权限账号；初始建表可由首次部署显式开启的启动门禁自动执行，默认关闭，后续修改需独立迁移方案。详见[账号部署手册](docs/ACCOUNT_SERVICE.md)。正式隐私指引、运营方联系方式、备份期限及手机号资格必须在启用前完善。
 
-### `POST /api/count`
+## 开发与质量检查
 
-更新计数，自增或者清零
+Node.js 版本见 package.json。`npm run quality` 运行语法、ESLint、Prettier、运行资源预算、客户端测试和后端接口测试。API 测试使用明确的测试存储替身，不代表真实 MySQL 或微信联调；原生编译也不代表硬件验收。
 
-#### 请求参数
-
-- `action`：`string` 类型，枚举值
-  - 等于 `"inc"` 时，表示计数加一
-  - 等于 `"clear"` 时，表示计数重置（清零）
-
-##### 请求参数示例
-
-```
-{
-  "action": "inc"
-}
-```
-
-#### 响应结果
-
-- `code`：错误码
-- `data`：当前计数值
-
-##### 响应结果示例
-
-```json
-{
-  "code": 0,
-  "data": 42
-}
-```
-
-#### 调用示例
-
-```
-curl -X POST -H 'content-type: application/json' -d '{"action": "inc"}' https://<云托管服务域名>/api/count
-```
-
-## 使用注意
-如果不是通过微信云托管控制台部署模板代码，而是自行复制/下载模板代码后，手动新建一个服务并部署，需要在「服务设置」中补全以下环境变量，才可正常使用，否则会引发无法连接数据库，进而导致部署失败。
-- MYSQL_ADDRESS
-- MYSQL_PASSWORD
-- MYSQL_USERNAME
-以上三个变量的值请按实际情况填写。如果使用云托管内MySQL，可以在控制台MySQL页面获取相关信息。
-
-
-## License
-
-[MIT](./LICENSE)
+不提交 node_modules、预览产物、个人 IDE 配置、真实环境文件或运行截图。开发版上传、体验版、提审和正式发布是不同动作；本轮未提交、推送、部署或上传版本。
