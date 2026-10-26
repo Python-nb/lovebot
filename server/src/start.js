@@ -16,9 +16,9 @@ let pool;
   const store = new MysqlStore(pool);
   await store.ready();
   const app = createApp({ ...cfg, store, wechat: createWechat(cfg) });
-  const server = app.listen(Number(process.env.PORT || 80), '0.0.0.0', () =>
-    console.log('Courtside API ready'),
-  );
+  // This service's cloud health probes target container port 80. An inherited
+  // PORT=8080 must not silently move this listener away from those probes.
+  const server = app.listen(80, '0.0.0.0', () => console.log('Courtside API ready'));
   const cleanup = setInterval(
     () => store.cleanup().catch(() => console.error('Scheduled cleanup failed')),
     3600000,

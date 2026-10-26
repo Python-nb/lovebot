@@ -214,10 +214,13 @@ test('unattended migration only accepts reviewed additive initial statements', (
 test('both image entry points wait for startup initialization before listening and build never connects to DB', () => {
   const start = fs.readFileSync(path.join(__dirname, '../src/start.js'), 'utf8');
   assert.ok(start.indexOf('await runMigrations()') < start.indexOf('app.listen('));
+  assert.match(start, /app\.listen\(80, '0\.0\.0\.0'/);
   assert.match(start, /DB_AUTO_MIGRATE === 'true'/);
   for (const file of ['../../Dockerfile', '../Dockerfile']) {
     const docker = fs.readFileSync(path.join(__dirname, file), 'utf8');
     assert.match(docker, /CMD \["node", "src\/start.js"\]/);
+    assert.match(docker, /EXPOSE 80/);
+    assert.doesNotMatch(docker, /PORT=8080/);
     assert.doesNotMatch(docker, /RUN .*migrate/);
   }
 });
