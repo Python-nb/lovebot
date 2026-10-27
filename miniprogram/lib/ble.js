@@ -108,6 +108,7 @@ class BleClient {
       this.rx = rx.uuid;
       this.tx = tx.uuid;
       this.writeType = rx.properties.write ? 'write' : 'writeNoResponse';
+      const subscriptionType = tx.properties.notify ? 'notification' : 'indication';
       // 先置 ready，避免订阅成功后的首帧被丢弃。
       this.ready = true;
       await call(this.api, 'notifyBLECharacteristicValueChange', {
@@ -115,6 +116,7 @@ class BleClient {
         serviceId: this.serviceId,
         characteristicId: this.tx,
         state: true,
+        type: subscriptionType,
       });
     } catch (error) {
       await this.disconnect();

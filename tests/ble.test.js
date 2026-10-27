@@ -48,6 +48,45 @@ test('connection validates UUIDs and subscribes without starting hardware', asyn
   assert.equal(h.calls.filter((x) => x[0] === 'notifyBLECharacteristicValueChange').length, 1);
   await client.dispose();
 });
+test('a notify-only device delivers its first training frame after subscription', async () => {
+  const h = mock();
+  let received;
+  h.api.notifyBLECharacteristicValueChange = (options) => {
+    h.calls.push(['notifyBLECharacteristicValueChange', options]);
+    options.success({});
+    // Some devices expose only Notify; an Indication subscription can succeed
+    // without delivering any of their periodic data on the native side.
+    if (options.type === 'notification')
+      h.handlers.value({
+        deviceId: 'test',
+        serviceId: UUID.service,
+        characteristicId: UUID.tx,
+        value: encode('101,3,2,10,0,0,9,'),
+      });
+  };
+  const client = new BleClient(h.api, { frame: (frame) => (received = frame) });
+  await client.connect({ deviceId: 'test' });
+  assert.equal(received?.shots, 3);
+  assert.equal(received?.hits, 2);
+  assert.equal(h.calls.filter(([name]) => name === 'writeBLECharacteristicValue').length, 0);
+  await client.dispose();
+});
+test('an indicate-only device subscribes with indication rather than notification', async () => {
+  const h = mock();
+  h.api.getBLEDeviceCharacteristics = (options) =>
+    options.success({
+      characteristics: [
+        { uuid: UUID.rx, properties: { write: true } },
+        { uuid: UUID.tx, properties: { indicate: true } },
+      ],
+    });
+  const client = new BleClient(h.api);
+  await client.connect({ deviceId: 'test' });
+  const subscription = h.calls.find(([name]) => name === 'notifyBLECharacteristicValueChange')[1];
+  assert.equal(subscription.type, 'indication');
+  assert.equal(h.calls.filter(([name]) => name === 'writeBLECharacteristicValue').length, 0);
+  await client.dispose();
+});
 test('privacy rejection prevents scanning and connecting before Bluetooth is accessed', async () => {
   const h = mock();
   h.api.requirePrivacyAuthorize = (o) => o.fail({ errMsg: 'user rejected privacy' });
