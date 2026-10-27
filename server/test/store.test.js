@@ -98,3 +98,47 @@ test('phone uniqueness collision rolls back and returns explicit non-merging con
   });
   assert.deepEqual(calls.slice(-2), [['rollback'], ['release']]);
 });
+test('registration inserts a verified identity, password and session in one transaction', async () => {
+  const { store, calls } = fixture([[[]]]);
+  const session = { hash: 'new-session', method: 'wechat', createdAt: 10, expiresAt: 20 };
+  const user = await store.register('wx-hash', 'phone-hash', '138****0000', 'hash', session);
+  assert.equal(user.phoneMask, '138****0000');
+  assert.match(calls[1][0], /wechat_key=\? FOR UPDATE/);
+  assert.match(calls[2][0], /INSERT INTO users/);
+  assert.equal(calls[2][1][0], session.userId);
+  assert.match(calls[3][0], /INSERT INTO sessions/);
+  assert.deepEqual(calls.slice(-2), [['commit'], ['release']]);
+});
+test('registration conflict rolls back without creating a session', async () => {
+  const { store, calls } = fixture([[[dbUser]]]);
+  await assert.rejects(
+    store.register('wx-hash', 'phone-hash', '138****0000', 'hash', { hash: 'next' }),
+    { code: 'ALREADY_REGISTERED' },
+  );
+  assert.equal(
+    calls.some(([sql]) => sql.startsWith('INSERT INTO sessions')),
+    false,
+  );
+  assert.deepEqual(calls.slice(-2), [['rollback'], ['release']]);
+});
+test('username readiness requires migrated nullable identity and account columns', async () => {
+  const old = fixture([[[{ nullable: 'NO' }]]]);
+  await assert.rejects(old.store.readyUsername(), /migration/);
+  assert.equal(old.calls.length, 1);
+  const current = fixture([[[{ nullable: 'YES' }]], [[]]]);
+  await current.store.readyUsername();
+  assert.match(current.calls[1][0], /username_key,username FROM users LIMIT 0/);
+});
+test('username uniqueness collision rolls back without issuing session', async () => {
+  const duplicate = Object.assign(new Error('sql detail'), { code: 'ER_DUP_ENTRY' });
+  const { store, calls } = fixture([duplicate]);
+  await assert.rejects(
+    store.usernameRegister('username-key', 'player_1', 'hash', { hash: 'new' }, Date.now()),
+    { code: 'USERNAME_IN_USE' },
+  );
+  assert.equal(
+    calls.some(([sql]) => sql.startsWith('INSERT INTO sessions')),
+    false,
+  );
+  assert.deepEqual(calls.slice(-2), [['rollback'], ['release']]);
+});

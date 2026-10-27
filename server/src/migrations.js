@@ -7,7 +7,7 @@ const { MysqlStore } = require('./store');
 
 const HISTORY = 'courtside_schema_migrations';
 const definitions = () =>
-  ['001_initial'].map((version) => {
+  ['001_initial', '002_username_auth'].map((version) => {
     const sql = fs.readFileSync(path.join(__dirname, `../migrations/${version}.sql`), 'utf8');
     return { version, sql, checksum: createHash('sha256').update(sql).digest('hex') };
   });
@@ -19,12 +19,22 @@ function stop(code) {
 
 // Only checked-in, additive initial DDL is eligible for unattended initialization.
 // Future ALTER/data migrations must introduce their own reviewed recovery strategy.
-function statements(sql) {
+function statements(sql, version = '001_initial') {
   const parts = sql
     .split(';')
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!parts.length || parts.some((s) => !/^CREATE TABLE IF NOT EXISTS [a-z_]+\s*\(/.test(s)))
+  const accountAlter =
+    'ALTER TABLE users MODIFY wechat_key CHAR(64) CHARACTER SET ascii NULL, ADD COLUMN username_key CHAR(64) CHARACTER SET ascii NULL UNIQUE, ADD COLUMN username VARCHAR(32) NULL';
+  if (
+    !parts.length ||
+    parts.some(
+      (s) =>
+        !/^CREATE TABLE IF NOT EXISTS [a-z_]+\s*\(/.test(s) &&
+        !(version === '002_username_auth' && s === accountAlter),
+    ) ||
+    (version === '002_username_auth' && (parts.length !== 1 || parts[0] !== accountAlter))
+  )
     stop('MIGRATION_UNSUPPORTED_SQL');
   return parts;
 }
@@ -34,9 +44,10 @@ async function runMigrations({
   connect = mysql.createConnection,
   migrations = definitions(),
   verify = (db) => new MysqlStore(db).ready(),
+  verifyUsername = (db) => new MysqlStore(db).readyUsername(),
 } = {}) {
   const { options, createDatabase } = migrationConfig(env);
-  const commands = migrations.map((m) => ({ ...m, commands: statements(m.sql) }));
+  const commands = migrations.map((m) => ({ ...m, commands: statements(m.sql, m.version) }));
   const lock = `courtside:migrate:${createHash('sha256').update(options.database).digest('hex').slice(0, 40)}`;
   const connection = { ...options };
   delete connection.connectionLimit;
@@ -45,7 +56,8 @@ async function runMigrations({
     locked = false,
     missing = false;
   const applied = [],
-    skipped = [];
+    skipped = [],
+    deferred = [];
   try {
     try {
       db = await connect(connection);
@@ -91,6 +103,10 @@ async function runMigrations({
         skipped.push(migration.version);
         continue;
       }
+      if (migration.version === '002_username_auth' && env.DB_ALLOW_USERNAME_MIGRATION !== 'true') {
+        deferred.push(migration.version);
+        continue;
+      }
       await db.execute(
         `INSERT INTO ${HISTORY}(version,checksum,status,started_at) VALUES(?,?,'running',?)`,
         [migration.version, migration.checksum, Date.now()],
@@ -99,6 +115,7 @@ async function runMigrations({
       // A failure leaves 'running', requiring review instead of blindly replaying on restart.
       for (const statement of migration.commands) await db.query(statement);
       await verify(db);
+      if (migration.version === '002_username_auth') await verifyUsername(db);
       const [updated] = await db.execute(
         `UPDATE ${HISTORY} SET status='applied',applied_at=? WHERE version=? AND status='running'`,
         [Date.now(), migration.version],
@@ -107,7 +124,12 @@ async function runMigrations({
       applied.push(migration.version);
     }
     await verify(db);
-    return { applied, skipped };
+    if (
+      history.some((h) => h.version === '002_username_auth') ||
+      applied.includes('002_username_auth')
+    )
+      await verifyUsername(db);
+    return deferred.length ? { applied, skipped, deferred } : { applied, skipped };
   } finally {
     if (locked) await db.execute('SELECT RELEASE_LOCK(?)', [lock]).catch(() => {});
     if (db) await db.end();

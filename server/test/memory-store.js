@@ -10,6 +10,7 @@ class MemoryStore {
     this.buckets = new Map();
   }
   async ready() {}
+  async readyUsername() {}
   async limit(key, max, ms) {
     const bucket = this.buckets.get(key);
     const next =
@@ -34,8 +35,50 @@ class MemoryStore {
     }
     return { ...user };
   }
+  async register(wechatKey, phoneKey, mask, passwordHash, session) {
+    const existing = [...this.users.values()].find((u) => u.wechatKey === wechatKey);
+    if (existing?.passwordHash)
+      fail(409, 'ALREADY_REGISTERED', '该微信账号已设置密码，请直接登录或重置密码');
+    if (existing?.phoneKey && existing.phoneKey !== phoneKey)
+      fail(409, 'PHONE_BOUND', '该微信账号已绑定其他手机号，请联系运营方处理');
+    if ([...this.users.values()].some((u) => u.id !== existing?.id && u.phoneKey === phoneKey))
+      fail(409, 'REGISTER_CONFLICT', '手机号已绑定其他账号，不会自动合并');
+    const user = existing || {
+      id: randomUUID(),
+      wechatKey,
+      nickname: '球场新朋友',
+    };
+    Object.assign(user, { phoneKey, phoneMask: mask, passwordHash });
+    this.users.set(user.id, user);
+    for (const [k, s] of this.sessions) if (s.userId === user.id) this.sessions.delete(k);
+    session.userId = user.id;
+    this.sessions.set(session.hash, { ...session });
+    return { ...user };
+  }
   async byPhone(key) {
     const u = [...this.users.values()].find((u) => u.phoneKey === key);
+    return u && { ...u };
+  }
+  async usernameRegister(key, username, passwordHash, session) {
+    if ([...this.users.values()].some((u) => u.usernameKey === key))
+      fail(409, 'USERNAME_IN_USE', '账号名已被使用，请换一个');
+    const user = {
+      id: randomUUID(),
+      wechatKey: null,
+      usernameKey: key,
+      username,
+      phoneKey: null,
+      phoneMask: null,
+      passwordHash,
+      nickname: '球场新朋友',
+    };
+    this.users.set(user.id, user);
+    session.userId = user.id;
+    this.sessions.set(session.hash, { ...session });
+    return { ...user };
+  }
+  async byUsername(key) {
+    const u = [...this.users.values()].find((row) => row.usernameKey === key);
     return u && { ...u };
   }
   async issue(s, hash) {
@@ -66,7 +109,7 @@ class MemoryStore {
   async changePassword(auth, previousHash, nextHash, session) {
     const u = this.check(auth);
     if (u.passwordHash !== previousHash) fail(409, 'ACCOUNT_CHANGED', '密码状态已变化');
-    if (!u.phoneKey) fail(400, 'PHONE_REQUIRED', '请先授权绑定手机号');
+    if (!u.phoneKey && !u.usernameKey) fail(400, 'PHONE_REQUIRED', '请先授权绑定手机号');
     u.passwordHash = nextHash;
     for (const [k, s] of this.sessions) if (s.userId === u.id) this.sessions.delete(k);
     this.sessions.set(session.hash, session);

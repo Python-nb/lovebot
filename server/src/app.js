@@ -30,8 +30,15 @@ function record(input, now) {
     interrupted: input.interrupted === true,
   };
 }
-const CONSENT_VERSION = '2026-10-26-account-v1';
-function createApp({ store, wechat, identityKey, phoneEnabled = false, now = Date.now }) {
+const CONSENT_VERSION = '2026-10-26-account-v3';
+function createApp({
+  store,
+  wechat,
+  identityKey,
+  phoneEnabled = false,
+  usernameEnabled = false,
+  now = Date.now,
+}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(helmet());
@@ -46,7 +53,9 @@ function createApp({ store, wechat, identityKey, phoneEnabled = false, now = Dat
     await store.ready();
     res.json({ ok: true });
   });
-  app.get('/v1/config', (_req, res) => res.json({ phoneEnabled, consentVersion: CONSENT_VERSION }));
+  app.get('/v1/config', (_req, res) =>
+    res.json({ phoneEnabled, usernameEnabled, consentVersion: CONSENT_VERSION }),
+  );
   const limit = (kind, value, max = 10, windowMs = 900000) =>
     store.limit(S.identity(identityKey, kind, value), max, windowMs);
   function consent(req) {
@@ -71,6 +80,32 @@ function createApp({ store, wechat, identityKey, phoneEnabled = false, now = Dat
     const user = await store.wechatUser(key);
     await issue(res, user, 'wechat');
   });
+  app.post('/v1/auth/register', async (req, res) => {
+    consent(req);
+    const { code, phoneCode, password } = req.body;
+    if (!S.text(code, 256) || !S.text(phoneCode, 256))
+      S.fail(400, 'INPUT', '请通过微信授权身份和手机号');
+    if (!S.passwordValid(password))
+      S.fail(400, 'PASSWORD_POLICY', '密码需 10–64 位，包含字母和数字且不含空格');
+    if (!phoneEnabled) S.fail(403, 'PHONE_DISABLED', '微信手机号能力尚未开通');
+    await limit('register-global', 'all', 60, 60000);
+    const openid = await wechat.login(code);
+    const wechatKey = S.identity(identityKey, 'wx', openid);
+    await limit('register-wx', wechatKey, 5, 3600000);
+    const phone = await wechat.phone(phoneCode);
+    const phoneKey = S.identity(identityKey, 'phone', phone);
+    await limit('register-phone', phoneKey, 5, 3600000);
+    const hash = await S.hashPassword(password);
+    const session = S.createSession(null, 'wechat', now());
+    const user = await store.register(
+      wechatKey,
+      phoneKey,
+      `${phone.slice(0, 3)}****${phone.slice(-4)}`,
+      hash,
+      session.row,
+    );
+    res.json({ token: session.token, expiresAt: session.row.expiresAt, user: S.publicUser(user) });
+  });
   app.post('/v1/auth/password', async (req, res) => {
     consent(req);
     const { phone, password } = req.body;
@@ -84,6 +119,35 @@ function createApp({ store, wechat, identityKey, phoneEnabled = false, now = Dat
     if (!verified || !user) S.fail(401, 'LOGIN_FAILED', '手机号或密码不正确');
     await issue(res, user, 'password', user.passwordHash);
   });
+  function usernameInput(req, registering = false) {
+    consent(req);
+    if (!usernameEnabled) S.fail(503, 'USERNAME_DISABLED', '账号密码服务尚未开放');
+    const { username, password } = req.body;
+    if (typeof username !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{5,23}$/.test(username))
+      S.fail(400, 'USERNAME_POLICY', '账号名须为 6–24 位字母、数字或下划线，以字母开头');
+    if (registering ? !S.passwordValid(password) : !S.text(password, 64))
+      S.fail(400, 'PASSWORD_POLICY', '密码需 10–64 位，包含字母和数字且不含空格');
+    const normalized = username.toLowerCase();
+    return { normalized, key: S.identity(identityKey, 'username', normalized), password };
+  }
+  app.post('/v1/auth/username/register', async (req, res) => {
+    const { normalized, key, password } = usernameInput(req, true);
+    await limit('username-register-global', 'all', 60, 60000);
+    await limit('username-register-key', key, 5, 3600000);
+    const hash = await S.hashPassword(password);
+    const session = S.createSession(null, 'username', now());
+    const user = await store.usernameRegister(key, normalized, hash, session.row, now());
+    res.json({ token: session.token, expiresAt: session.row.expiresAt, user: S.publicUser(user) });
+  });
+  app.post('/v1/auth/username', async (req, res) => {
+    const { key, password } = usernameInput(req);
+    await limit('username-login-global', 'all', 120, 60000);
+    await limit('username-login-key', key);
+    const user = await store.byUsername(key);
+    const verified = await S.checkPassword(password, user?.passwordHash);
+    if (!verified || !user) S.fail(401, 'LOGIN_FAILED', '账号或密码不正确');
+    await issue(res, user, 'username', user.passwordHash);
+  });
   app.use('/v1', async (req, _res, next) => {
     const bearer = req.get('Authorization') || '';
     if (!/^Bearer [a-f0-9]{64}$/.test(bearer)) S.fail(401, 'AUTH', '请先登录');
@@ -95,6 +159,13 @@ function createApp({ store, wechat, identityKey, phoneEnabled = false, now = Dat
   function freshWechat(auth) {
     if (auth.session.method !== 'wechat' || now() - auth.session.createdAt > 300000)
       S.fail(403, 'REAUTH', '请重新使用微信登录后操作（5 分钟内有效）');
+  }
+  function freshIdentity(auth) {
+    if (
+      !['wechat', 'username'].includes(auth.session.method) ||
+      now() - auth.session.createdAt > 300000
+    )
+      S.fail(403, 'REAUTH', '请在 5 分钟内重新登录微信或账号后操作');
   }
   app.get('/v1/me', (req, res) => res.json({ user: S.publicUser(req.auth.user) }));
   app.post('/v1/auth/logout', async (req, res) => {
@@ -118,7 +189,8 @@ function createApp({ store, wechat, identityKey, phoneEnabled = false, now = Dat
       S.fail(400, 'PASSWORD_POLICY', '密码需 10–64 位，包含字母和数字且不含空格');
     await limit('password-change', req.auth.user.id, 8);
     const user = req.auth.user;
-    if (!user.phoneKey) S.fail(400, 'PHONE_REQUIRED', '请先授权绑定手机号');
+    if (!user.phoneKey && !user.usernameKey)
+      S.fail(400, 'IDENTITY_REQUIRED', '请先绑定手机号或注册独立账号');
     if (reset) {
       freshWechat(req.auth);
       const phone = await wechat.phone(req.body.code);
@@ -182,7 +254,7 @@ function createApp({ store, wechat, identityKey, phoneEnabled = false, now = Dat
   });
   app.delete('/v1/account', async (req, res) => {
     if (req.body?.confirm !== 'DELETE_ACCOUNT') S.fail(400, 'CONFIRM', '请先确认注销账号');
-    freshWechat(req.auth);
+    freshIdentity(req.auth);
     await store.deleteAccount(req.auth);
     res.json({ ok: true });
   });

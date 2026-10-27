@@ -62,6 +62,7 @@ function publicUser(user) {
   return {
     id: user.id,
     nickname: user.nickname,
+    username: user.username || '',
     phoneMasked: user.phoneMask || '',
     hasPassword: !!user.passwordHash,
   };

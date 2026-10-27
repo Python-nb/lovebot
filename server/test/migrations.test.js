@@ -58,6 +58,8 @@ function fixture(options = {}) {
         throw Object.assign(new Error('SQL detail must not be logged'), {
           code: 'ER_TABLEACCESS_DENIED_ERROR',
         });
+      if (sql.startsWith('ALTER TABLE users MODIFY wechat_key'))
+        assert.equal(options.allowUsername, true);
       return [{}];
     },
     async end() {
@@ -74,10 +76,13 @@ function fixture(options = {}) {
     runMigrations({
       env: { ...env, ...extraEnv },
       connect,
-      migrations: [migration],
+      migrations: options.migrations || [migration],
       verify: async () => {
         verified++;
         if (options.verifyFailure) throw new Error('schema invalid');
+      },
+      verifyUsername: async () => {
+        if (!options.allowUsername) throw new Error('unexpected username schema verification');
       },
     });
   return { run, calls, connections, history, ended: () => ended, verified: () => verified };
@@ -210,6 +215,42 @@ test('unattended migration only accepts reviewed additive initial statements', (
     '',
   ])
     assert.throws(() => statements(sql), { code: 'MIGRATION_UNSUPPORTED_SQL' });
+});
+test('username migration is deferred unless explicitly enabled, and only its reviewed nullable identity alteration is allowed', async () => {
+  const sql = fs.readFileSync(path.join(__dirname, '../migrations/002_username_auth.sql'), 'utf8');
+  const username = { version: '002_username_auth', sql, checksum: 'b'.repeat(64) };
+  assert.equal(statements(sql, username.version).length, 1);
+  assert.throws(() => statements('ALTER TABLE users DROP COLUMN wechat_key;', username.version), {
+    code: 'MIGRATION_UNSUPPORTED_SQL',
+  });
+  const history = [{ ...migration, status: 'applied' }];
+  const f = fixture({
+    tables: ['courtside_schema_migrations'],
+    history,
+    migrations: [migration, username],
+  });
+  assert.deepEqual(await f.run(), {
+    applied: [],
+    skipped: ['001_test'],
+    deferred: ['002_username_auth'],
+  });
+  assert.equal(
+    f.calls.some(([query]) => query.startsWith('ALTER TABLE')),
+    false,
+  );
+  assert.equal(
+    f.calls.some(([query]) => query.startsWith('INSERT INTO courtside_schema')),
+    false,
+  );
+  const approved = fixture({
+    tables: ['courtside_schema_migrations'],
+    history: [{ ...migration, status: 'applied' }],
+    migrations: [migration, username],
+    allowUsername: true,
+  });
+  const result = await approved.run({ DB_ALLOW_USERNAME_MIGRATION: 'true' });
+  assert.deepEqual(result.applied, ['002_username_auth']);
+  assert.equal(approved.calls.filter(([query]) => query.startsWith('ALTER TABLE users')).length, 1);
 });
 test('both image entry points wait for startup initialization before listening and build never connects to DB', () => {
   const start = fs.readFileSync(path.join(__dirname, '../src/start.js'), 'utf8');

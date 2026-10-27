@@ -81,7 +81,7 @@ test('real WeChat exchange requires consent and backend response before establis
 });
 test('disabled configuration, missing WeChat API and invalid login never fake success', async () => {
   const h = fixture(undefined, { enabled: false });
-  await assert.rejects(h.client.wechatLogin(true), /尚未部署/);
+  await assert.rejects(h.client.wechatLogin(true), /尚未开放/);
   assert.equal(h.loginCalls(), 0);
   assert.equal(h.calls.length, 0);
   const bad = fixture(async () => ({ code: 'not-a-session' }));
@@ -158,8 +158,40 @@ test('password and raw auth responses are never stored in profile or record cach
   );
   assert.equal(h.calls[0].data.password, 'Password12345');
 });
+test('native phone registration exchanges a fresh wx.login code and stores only the business session', async () => {
+  const h = fixture(async () => ({
+    ...session(),
+    user: { ...user, phoneMasked: '138****0000', hasPassword: true },
+  }));
+  await assert.rejects(h.client.register('native-code', 'Password12345', false), /同意/);
+  assert.equal(h.loginCalls(), 0);
+  await h.client.register('native-code', 'Password12345', true);
+  assert.equal(h.calls[0].path, '/v1/auth/register');
+  assert.deepEqual(h.calls[0].data, {
+    code: 'single-use-test-code',
+    phoneCode: 'native-code',
+    password: 'Password12345',
+    consentVersion: CONSENT_VERSION,
+  });
+  assert.doesNotMatch(JSON.stringify([...h.storage.values()]), /native-code|Password12345/);
+});
+test('independent username registration and login need no WeChat or phone and never cache password', async () => {
+  const h = fixture(async () => ({
+    ...session(),
+    user: { ...user, username: 'courtplayer', hasPassword: true },
+  }));
+  await assert.rejects(h.client.usernameRegister('CourtPlayer', 'Password12345', false), /同意/);
+  await h.client.usernameRegister('CourtPlayer', 'Password12345', true);
+  await h.client.usernameLogin('COURTPLAYER', 'Password12345', true);
+  assert.equal(h.loginCalls(), 0);
+  assert.equal(h.calls[0].path, '/v1/auth/username/register');
+  assert.equal(h.calls[1].path, '/v1/auth/username');
+  assert.equal(h.client.user.username, 'courtplayer');
+  assert.doesNotMatch(JSON.stringify([...h.storage.values()]), /Password12345|COURTPLAYER/);
+});
 test('guest, accounts and draft keys remain isolated, even through a previously acquired adapter', () => {
   const h = fixture();
+  assert.throws(() => h.client.storage(), /游客训练仅限本次使用/);
   R.save(h.api, row('guest'));
   h.client.persist(session());
   const firstKey = h.client.key(),
@@ -310,6 +342,74 @@ test('password reset native authorization is separate from password entry and co
   assert.deepEqual(received, ['Password12345', 'verified-test-code']);
   assert.equal(page.data.newPassword, '');
   assert.equal(page.resetPhoneCode, null);
+});
+test('registration from avatar requires consent and native phone authorization without retaining the code', async () => {
+  const { page, api, notifications } = pageFixture();
+  api.requirePrivacyAuthorize = ({ success }) => success();
+  page.data.accountView = 'register';
+  page.data.registerMethod = 'wechat';
+  page.data.accountSheet = true;
+  page.data.phoneEnabled = true;
+  page.data.newPassword = page.data.confirmPassword = 'Password12345';
+  let received;
+  page.account = {
+    assertConfigured() {},
+    register: async (...args) => {
+      received = args;
+    },
+    get user() {
+      return user;
+    },
+    get active() {
+      return true;
+    },
+    snapshot: () => ({ pending: [] }),
+    draftKey: () => 'account-draft',
+  };
+  await page.registerWithPhone({ detail: { code: 'phone-one-time' } });
+  assert.equal(received, undefined);
+  assert.match(notifications.at(-1), /同意/);
+  page.data.accountAccepted = true;
+  page.data.newPassword = page.data.confirmPassword = 'Password12345';
+  await page.registerWithPhone({ detail: { code: 'phone-one-time' } });
+  assert.deepEqual(received, ['phone-one-time', 'Password12345', true]);
+  assert.doesNotMatch(JSON.stringify(page.data), /phone-one-time|Password12345/);
+  assert.equal(page.data.accountView, 'security');
+});
+test('username form registers only on consent and clears credentials after response', async () => {
+  const { page, api, notifications } = pageFixture();
+  api.requirePrivacyAuthorize = ({ success }) => success();
+  Object.assign(page.data, {
+    accountView: 'register',
+    registerMethod: 'username',
+    accountSheet: true,
+    usernameEnabled: true,
+    usernameInput: 'CourtPlayer',
+    newPassword: 'Password12345',
+    confirmPassword: 'Password12345',
+  });
+  const calls = [];
+  page.account = {
+    assertConfigured() {},
+    usernameRegister: async (...args) => calls.push(['register', ...args]),
+    get user() {
+      return user;
+    },
+    get active() {
+      return true;
+    },
+    snapshot: () => ({ pending: [] }),
+    draftKey: () => 'account-draft',
+  };
+  await page.submitUsername();
+  assert.equal(calls.length, 0);
+  assert.match(notifications.at(-1), /同意/);
+  page.data.accountAccepted = true;
+  await page.submitUsername();
+  assert.deepEqual(calls, [['register', 'CourtPlayer', 'Password12345', true]]);
+  assert.equal(page.data.accountView, 'security');
+  assert.equal(page.data.usernameInput, '');
+  assert.equal(page.data.newPassword, '');
 });
 test('closing/hiding clears every credential input, authorization code and visibility toggle', () => {
   const { page } = pageFixture();

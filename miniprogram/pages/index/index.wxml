@@ -28,6 +28,14 @@
       is="device-card"
       data="{{connected, deviceName, signalDbm, signalLevel, signalLabel, busy, state}}"
     />
+    <view wx:if="{{diagnosticAvailable}}" class="diagnostic-panel">
+      <button class="outline diagnostic-toggle" bindtap="toggleDiagnostics" disabled="{{busy}}"
+        >{{diagnosticId ? '关闭蓝牙诊断' : '开启蓝牙诊断（开发版）'}}</button
+      >
+      <text wx:if="{{diagnosticId}}" class="muted small"
+        >本次诊断编号：{{diagnosticId}} · 最多 5 分钟</text
+      >
+    </view>
     <view class="section-line"
       ><text class="section-title">训练数据</text><text class="micro-label">设备回传</text></view
     >
@@ -106,7 +114,8 @@
         ><image src="/assets/icons/player-play.png" />{{state === 'running' ? '训练进行中' :
         '开始训练'}}</button
       ><button class="secondary" bindtap="finish" disabled="{{state === 'idle' || busy}}"
-        >{{state === 'review' || state === 'interrupted' ? '核对 / 保存' : '结束 / 保存'}}</button
+        >{{state === 'review' || state === 'interrupted' ? (accountUser ? '核对 / 保存' :
+        '核对本次') : (accountUser ? '结束 / 保存' : '结束本次')}}</button
       ></view
     >
     <view class="session-status"
@@ -120,7 +129,7 @@
       >放弃本次未保存训练</button
     >
     <text class="safety-note"
-      >训练时请保持小程序在前台。请远离出球口，紧急情况优先使用机器实体停止开关。</text
+      >训练时请保持小程序在前台。游客训练仅本次可见，不保存或上传。请远离出球口，紧急情况优先使用机器实体停止开关。</text
     >
     <view wx:if="{{recent.length}}" class="recent-block"
       ><view class="section-line"
@@ -142,7 +151,7 @@
     <view class="page-heading"
       ><view
         ><text class="page-title">排行榜</text
-        ><text class="small muted">个人训练榜 · {{sourceLabel}} · 仅本机成绩</text></view
+        ><text class="small muted">个人训练榜 · {{sourceLabel}}</text></view
       ><button class="help-button" bindtap="help" aria-label="连接和安全帮助"
         ><text class="help-face" aria-hidden="true">?</text></button
       ></view
@@ -176,9 +185,9 @@
         class="empty-illustration"
         src="/assets/brand/training-empty.png"
         mode="aspectFit"
-      /><text class="muted">暂无训练数据</text
+      /><text class="muted">{{accountUser ? '暂无训练数据' : '本次暂无训练结果'}}</text
       ><button class="text-button" data-id="home" bindtap="switchTab"
-        >完成一次训练，记录第一份成绩 ›</button
+        >{{accountUser ? '完成一次训练，记录第一份成绩' : '连接发球机开始本次训练'}} ›</button
       ></view
     >
     <view wx:else class="rank-list"
@@ -193,7 +202,9 @@
     <view class="note-card"
       ><text class="section-title">我的最佳成绩</text
       ><text class="personal-best">{{ranking.length ? ranking[0].score : '暂无成绩'}}</text
-      ><text class="muted small">个人单次训练排行，非全网排名。</text></view
+      ><text class="muted small"
+        >{{accountUser ? '账号本机单次训练排行' : '仅本次训练结果'}}，非全网排名。</text
+      ></view
     >
   </view>
 
@@ -300,42 +311,27 @@
       ><text class="page-title">我的</text><text class="small muted">爱冠篮 · 篮球训练</text></view
     >
     <view class="profile-card"
-      ><view class="avatar"><image src="/assets/brand/app-icon.png" mode="aspectFill" /></view
+      ><button
+        class="avatar-entry"
+        bindtap="openAccount"
+        disabled="{{busy || state !== 'idle'}}"
+        aria-label="{{accountUser ? '打开账号与安全' : '点击头像登录'}}"
+        ><image src="/assets/brand/app-icon.png" mode="aspectFill" aria-hidden="true" /></button
       ><view class="grow"
         ><text class="profile-name">{{nickname}}</text
-        ><text class="muted small">保持专注，让投篮成为习惯。</text></view
+        ><text class="muted small"
+          >{{accountStatus}} · {{accountUser ? '点击头像管理账号' : '点击头像登录'}}</text
+        ><text class="muted small">{{syncLabel}}</text></view
       ><button class="edit-button" bindtap="rename" aria-label="修改训练昵称"
         ><image src="/assets/icons/pencil.png" /></button
     ></view>
     <view class="profile-summary"
       ><view><text>{{records.length}}</text><text class="muted small">累计训练 / 次</text></view
       ><view
-        ><text>{{accountUser ? '账号数据' : '仅本机'}}</text
+        ><text>{{accountUser ? '账号本机' : '不保存'}}</text
         ><text class="muted small">训练记录存储</text></view
       ></view
     >
-    <view class="account-card">
-      <view class="section-line">
-        <view class="grow"
-          ><text class="record-title">{{accountUser ? '账号与安全' : '登录，保存你的训练'}}</text
-          ><text class="muted small">{{accountSubtitle}}</text></view
-        >
-        <button
-          class="capsule-button account-entry"
-          bindtap="openAccount"
-          disabled="{{busy || state !== 'idle'}}"
-          ><text class="capsule-face">{{accountUser ? '管理账号' : '去登录'}}</text></button
-        >
-      </view>
-      <text class="muted small">{{accountStatus}} · {{syncLabel}}</text>
-      <button
-        wx:if="{{accountUser}}"
-        class="account-sync"
-        bindtap="syncAccountRecords"
-        disabled="{{busy || state !== 'idle'}}"
-        >{{busy ? '正在处理…' : '同步训练记录'}}</button
-      >
-    </view>
     <view class="section-line"><text class="section-title">我的发球机</text></view>
     <template
       is="device-card"
@@ -432,8 +428,8 @@
     <view class="data-sheet account-sheet" role="dialog" aria-label="账号与安全">
       <view class="section-line"
         ><text class="section-title"
-          >{{accountView === 'login' || accountView === 'password' ? '登录爱冠篮' :
-          '账号与安全'}}</text
+          >{{accountView === 'register' ? '注册爱冠篮' : (accountView === 'login' || accountView ===
+          'password' ? '登录爱冠篮' : '账号与安全')}}</text
         ><button
           class="close-button"
           bindtap="closeAccount"
@@ -443,10 +439,12 @@
         ></view
       >
       <scroll-view scroll-y="true" class="data-content account-content">
-        <block wx:if="{{accountView === 'login' || accountView === 'password'}}">
+        <block
+          wx:if="{{accountView === 'login' || accountView === 'password' || accountView === 'register'}}"
+        >
           <text class="account-title">每次练习，都有记录。</text>
           <text class="muted small"
-            >登录后可将已核对的训练记录同步到本人账号。游客模式仍可使用蓝牙训练，不强制提供手机号。</text
+            >登录后可将已核对的账号训练记录手动同步。游客仍可连接蓝牙并完成单次训练，但本次结果不保存或上传；不强制提供手机号。</text
           >
           <view class="capsule-group account-tabs">
             <button
@@ -461,21 +459,27 @@
               aria-pressed="{{accountView === 'password'}}"
               data-view="password"
               bindtap="accountView"
-              ><text class="capsule-face">手机号密码</text></button
+              ><text class="capsule-face">账号登录</text></button
+            >
+            <button
+              class="capsule-button {{accountView === 'register' ? 'selected' : ''}}"
+              aria-pressed="{{accountView === 'register'}}"
+              data-view="register"
+              bindtap="accountView"
+              ><text class="capsule-face">注册</text></button
             >
           </view>
           <block wx:if="{{accountView === 'password'}}">
-            <label class="account-label" for="login-phone">手机号</label>
+            <label class="account-label" for="login-username">账号名</label>
             <input
-              id="login-phone"
+              id="login-username"
               class="account-input"
-              type="number"
-              maxlength="11"
-              value="{{phoneInput}}"
-              data-field="phoneInput"
+              maxlength="24"
+              value="{{usernameInput}}"
+              data-field="usernameInput"
               bindinput="accountInput"
-              placeholder="已在微信账号中验证绑定的手机号"
-              aria-label="登录手机号"
+              placeholder="请输入账号名"
+              aria-label="登录账号名"
               disabled="{{busy}}"
             />
             <label class="account-label" for="login-password">登录密码</label>
@@ -494,8 +498,114 @@
             <button class="account-text-button" bindtap="togglePassword"
               >{{showPassword ? '隐藏密码' : '显示密码'}}</button
             >
+            <view class="account-links">
+              <text class="muted small"
+                >忘记密码请联系运营方核验身份；当前不能凭账号名自助重置。</text
+              >
+            </view>
+          </block>
+          <block wx:if="{{accountView === 'register'}}">
+            <view class="capsule-group account-tabs">
+              <button
+                class="capsule-button {{registerMethod === 'username' ? 'selected' : ''}}"
+                aria-pressed="{{registerMethod === 'username'}}"
+                data-method="username"
+                bindtap="selectRegisterMethod"
+                ><text class="capsule-face">账号密码</text></button
+              >
+              <button
+                class="capsule-button {{registerMethod === 'wechat' ? 'selected' : ''}}"
+                aria-pressed="{{registerMethod === 'wechat'}}"
+                data-method="wechat"
+                bindtap="selectRegisterMethod"
+                ><text class="capsule-face">微信手机号</text></button
+              >
+            </view>
+          </block>
+          <block wx:if="{{accountView === 'register' ? registerMethod === 'wechat' : false}}">
             <text class="muted small"
-              >首次使用请先微信登录，验证绑定手机号并设置密码。忘记密码可微信登录后重新验证手机号重置。</text
+              >微信快捷注册需主动授权手机号，服务端核验身份与号码后设置密码；不合并其他账号。</text
+            >
+            <label class="account-label" for="register-password">设置密码</label>
+            <input
+              id="register-password"
+              class="account-input"
+              password="{{!showPassword}}"
+              maxlength="64"
+              value="{{newPassword}}"
+              data-field="newPassword"
+              bindinput="accountInput"
+              placeholder="10–64 位，含字母和数字"
+              aria-label="设置登录密码"
+              disabled="{{busy}}"
+            />
+            <label class="account-label" for="register-confirm">确认密码</label>
+            <input
+              id="register-confirm"
+              class="account-input"
+              password="{{!showPassword}}"
+              maxlength="64"
+              value="{{confirmPassword}}"
+              data-field="confirmPassword"
+              bindinput="accountInput"
+              placeholder="再次输入密码"
+              aria-label="确认登录密码"
+              disabled="{{busy}}"
+            />
+            <button class="account-text-button" bindtap="togglePassword"
+              >{{showPassword ? '隐藏密码' : '显示密码'}}</button
+            >
+            <text wx:if="{{!phoneEnabled}}" class="muted small"
+              >微信手机号能力尚未开通。可改用账号密码注册，或游客单次使用。</text
+            >
+          </block>
+          <block wx:if="{{accountView === 'register' ? registerMethod === 'username' : false}}">
+            <text class="muted small"
+              >独立账号无需手机号或短信；不会与微信身份自动合并。请妥善保存账号名和密码，暂不支持自助找回。</text
+            >
+            <label class="account-label" for="register-username">账号名</label>
+            <input
+              id="register-username"
+              class="account-input"
+              maxlength="24"
+              value="{{usernameInput}}"
+              data-field="usernameInput"
+              bindinput="accountInput"
+              placeholder="6–24 位，以字母开头，可含数字和下划线"
+              aria-label="注册账号名"
+              disabled="{{busy}}"
+            />
+            <label class="account-label" for="username-new-password">设置密码</label>
+            <input
+              id="username-new-password"
+              class="account-input"
+              password="{{!showPassword}}"
+              maxlength="64"
+              value="{{newPassword}}"
+              data-field="newPassword"
+              bindinput="accountInput"
+              placeholder="10–64 位，含字母和数字"
+              aria-label="账号设置密码"
+              disabled="{{busy}}"
+            />
+            <label class="account-label" for="username-confirm-password">确认密码</label>
+            <input
+              id="username-confirm-password"
+              class="account-input"
+              password="{{!showPassword}}"
+              maxlength="64"
+              value="{{confirmPassword}}"
+              data-field="confirmPassword"
+              bindinput="accountInput"
+              placeholder="再次输入密码"
+              aria-label="确认账号密码"
+              disabled="{{busy}}"
+            />
+            <button class="account-text-button" bindtap="togglePassword"
+              >{{showPassword ? '隐藏密码' : '显示密码'}}</button
+            >
+            <text wx:if="{{!usernameEnabled}}" class="muted small"
+              >账号密码服务尚未开放，仍可游客单次使用。</text
             >
           </block>
           <view class="account-consent">
@@ -522,12 +632,29 @@
             >微信一键登录</button
           >
           <button
-            wx:else
+            wx:elif="{{accountView === 'password'}}"
             class="primary account-primary"
-            bindtap="loginWithPassword"
+            bindtap="submitUsername"
             loading="{{busy}}"
-            disabled="{{busy || !accountAccepted}}"
+            disabled="{{busy || !accountAccepted || !usernameInput || !loginPassword || !usernameEnabled}}"
             >登录</button
+          >
+          <button
+            wx:elif="{{accountView === 'register' ? (registerMethod === 'wechat' ? phoneEnabled : false) : false}}"
+            class="primary account-primary"
+            open-type="getPhoneNumber"
+            bindgetphonenumber="registerWithPhone"
+            loading="{{busy}}"
+            disabled="{{busy || !accountAccepted || !newPassword || !confirmPassword}}"
+            >授权手机号并注册</button
+          >
+          <button
+            wx:elif="{{accountView === 'register' ? registerMethod === 'username' : false}}"
+            class="primary account-primary"
+            bindtap="submitUsername"
+            loading="{{busy}}"
+            disabled="{{busy || !accountAccepted || !usernameInput || !newPassword || !confirmPassword || !usernameEnabled}}"
+            >注册并登录</button
           >
           <button
             wx:if="{{accountUser}}"
@@ -537,28 +664,29 @@
             >返回当前账号</button
           >
           <text class="muted small"
-            >登录不等于授权手机号。不会读取微信昵称、头像；不提供公开排行榜。</text
+            >微信登录不等于授权手机号；独立账号不需要微信手机号授权。不读取微信昵称、头像，不提供公开排行榜。</text
           >
         </block>
         <block wx:elif="{{accountView === 'security'}}">
           <text class="account-title">{{accountUser.nickname}}</text>
           <text class="muted small"
-            >{{accountStatus}} · {{accountUser.phoneMasked || '尚未绑定手机号'}}</text
+            >{{accountStatus}} · {{accountUser.username ? '账号：' + accountUser.username :
+            (accountUser.phoneMasked || '尚未绑定手机号')}}</text
           >
-          <text class="account-label">手机号与密码</text>
+          <text class="account-label">账号与密码</text>
           <button
-            wx:if="{{!accountUser.phoneMasked ? phoneEnabled : false}}"
+            wx:if="{{!accountUser.username && !accountUser.phoneMasked ? phoneEnabled : false}}"
             class="outline account-primary"
             open-type="getPhoneNumber"
             bindgetphonenumber="bindAccountPhone"
             disabled="{{busy}}"
             >授权绑定手机号</button
           >
-          <text wx:if="{{!phoneEnabled}}" class="muted small"
-            >运营方尚未开通微信手机号授权。微信登录仍可使用；手机号密码需开通验证能力后设置。</text
+          <text wx:if="{{!phoneEnabled && !accountUser.username}}" class="muted small"
+            >微信手机号授权尚未开通；可使用独立账号密码登录。</text
           >
           <button
-            wx:if="{{accountUser.phoneMasked}}"
+            wx:if="{{accountUser.phoneMasked || accountUser.username}}"
             class="setting-row"
             data-view="change"
             bindtap="accountView"
@@ -575,11 +703,11 @@
             ><text>忘记密码，验证手机号重置</text><text>›</text></button
           >
           <button class="setting-row" data-view="login" bindtap="accountView" disabled="{{busy}}"
-            ><text>重新微信登录 / 切换账号</text><text>›</text></button
+            ><text>重新登录 / 切换账号</text><text>›</text></button
           >
           <text class="muted small"
-            >首次设密码、绑定、重置和注销需 5
-            分钟内的微信登录；修改已有密码需原密码。改密后其他会话会失效。</text
+            >微信绑定及原生重置需 5
+            分钟内的微信登录；独立账号修改密码需原密码，忘记密码请联系运营方。注销需近期重新登录，改密后其他会话会失效。</text
           >
           <text class="account-label">我的数据</text>
           <button class="setting-row" bindtap="syncAccountRecords" disabled="{{busy}}"
@@ -590,11 +718,11 @@
             class="setting-row"
             bindtap="importGuestRecords"
             disabled="{{busy}}"
-            ><text>导入游客记录（{{guestCount}} 条）</text><text>›</text></button
+            ><text>导入旧版游客记录（{{guestCount}} 条）</text><text>›</text></button
           >
           <text class="muted small"
             >只上传本账号待同步的、由你确认的 BLE
-            记录。游客数据需先确认归属再导入；本机缓存不是云端已保存的证明。</text
+            记录。旧版游客缓存需先确认归属再导入；现在的游客单次结果不保存或导入。本机缓存不是云端已保存的证明。</text
           >
           <button class="setting-row account-danger" bindtap="deleteCloudData" disabled="{{busy}}"
             >删除账号训练记录</button
@@ -703,10 +831,10 @@
           >运营主体和隐私联系渠道以正式指引及小程序更多资料页的公示为准。如指引暂不可用，请稍后重试或通过小程序右上角“…”查看更多资料。</text
         >
         <button class="data-delete" bindtap="deleteRecords" disabled="{{busy || state !== 'idle'}}"
-          >删除本机训练记录</button
+          >{{accountUser ? '删除当前账号本机记录' : '删除旧版游客本机记录'}}</button
         >
         <text class="muted small"
-          >仅删除当前身份的本机缓存与待同步成绩，不影响其他账号或云端；下次同步可下载云端已有记录。未同步数据删除后无法恢复，不发送蓝牙指令；训练请先结束并核对。</text
+          >登录时仅删除当前账号的本机缓存与待同步成绩，不影响其他账号或云端；下次同步可下载云端已有记录。游客仅删除旧版游客本机记录，不影响本次内存结果。删除后无法恢复，不发送蓝牙指令；训练请先结束并核对。</text
         >
       </scroll-view>
     </view>

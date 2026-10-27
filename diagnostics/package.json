@@ -1,0 +1,12 @@
+{
+  "name": "courtside-ble-diagnostics",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node src/start.js",
+    "test": "node --test test/*.test.js"
+  }
+}

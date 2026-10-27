@@ -14,6 +14,13 @@ class BleClient {
     this.scanTimer = null;
     this.scanGeneration = 0;
     this.disposed = false;
+    this.diagnostic = (event, detail) => {
+      try {
+        events.diagnostic?.(event, detail);
+      } catch (_) {
+        /* never affect BLE */
+      }
+    };
     this.onFound = (result) =>
       !this.disposed && events.devices && events.devices(result.devices || []);
     this.onValue = (event) => {
@@ -26,9 +33,18 @@ class BleClient {
         event.serviceId.toLowerCase() !== UUID.service
       )
         return;
-      this.decoder
-        .push(decode(event.value))
-        .forEach((frame) => events.frame && events.frame(frame));
+      const bytes = new Uint8Array(event.value);
+      this.diagnostic('notify_raw', {
+        length: bytes.length,
+        // Shape only: digits become x, delimiters remain, unknown bytes become ?.
+        sample: [...bytes.slice(0, 24)]
+          .map((b) => (b >= 48 && b <= 57 ? 120 : [44, 10, 13].includes(b) ? b : 63))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join(''),
+      });
+      const frames = this.decoder.push(decode(event.value));
+      if (frames.length) this.diagnostic('frame_valid', { count: frames.length });
+      frames.forEach((frame) => events.frame && events.frame(frame));
     };
     this.onConnection = (event) => {
       if (
@@ -39,6 +55,7 @@ class BleClient {
       ) {
         this.ready = false;
         this.device = null;
+        this.diagnostic('disconnected');
         events.disconnected && events.disconnected();
       }
     };
@@ -111,13 +128,20 @@ class BleClient {
       const subscriptionType = tx.properties.notify ? 'notification' : 'indication';
       // 先置 ready，避免订阅成功后的首帧被丢弃。
       this.ready = true;
-      await call(this.api, 'notifyBLECharacteristicValueChange', {
-        deviceId: device.deviceId,
-        serviceId: this.serviceId,
-        characteristicId: this.tx,
-        state: true,
-        type: subscriptionType,
-      });
+      try {
+        await call(this.api, 'notifyBLECharacteristicValueChange', {
+          deviceId: device.deviceId,
+          serviceId: this.serviceId,
+          characteristicId: this.tx,
+          state: true,
+          type: subscriptionType,
+        });
+      } catch (error) {
+        this.diagnostic('notify_error', { code: error.errCode });
+        throw error;
+      }
+      this.diagnostic('notify_ok');
+      this.diagnostic('connection_ready');
     } catch (error) {
       await this.disconnect();
       throw error;
@@ -126,13 +150,27 @@ class BleClient {
   async send(command) {
     if (!this.ready || !this.device) throw new Error('蓝牙未连接');
     // 不重试：write 失败不代表设备一定没收到。
-    await call(this.api, 'writeBLECharacteristicValue', {
-      deviceId: this.device.deviceId,
-      serviceId: this.serviceId,
-      characteristicId: this.rx,
-      writeType: this.writeType,
-      value: encode(command),
-    });
+    const phase =
+      command === 'Turn-on'
+        ? 'start'
+        : command === 'Turn-off'
+          ? 'stop'
+          : command.startsWith('SET1#')
+            ? 'setup_time'
+            : 'setup_count';
+    try {
+      await call(this.api, 'writeBLECharacteristicValue', {
+        deviceId: this.device.deviceId,
+        serviceId: this.serviceId,
+        characteristicId: this.rx,
+        writeType: this.writeType,
+        value: encode(command),
+      });
+      this.diagnostic('write_ok', { phase });
+    } catch (error) {
+      this.diagnostic('write_error', { phase, code: error.errCode });
+      throw error;
+    }
   }
   async readSignal() {
     const device = this.device;

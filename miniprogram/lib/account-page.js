@@ -4,11 +4,13 @@ const R = require('./records');
 const initial = () => ({
   accountUser: null,
   accountStatus: '未登录',
-  accountSubtitle: '微信登录 / 手机号密码登录',
   accountSheet: false,
   accountView: 'login',
+  registerMethod: 'username',
   accountAccepted: false,
   phoneEnabled: false,
+  usernameEnabled: false,
+  usernameInput: '',
   phoneInput: '',
   loginPassword: '',
   currentPassword: '',
@@ -16,7 +18,7 @@ const initial = () => ({
   confirmPassword: '',
   showPassword: false,
   resetPhoneReady: false,
-  syncLabel: '游客记录仅本机保存',
+  syncLabel: '游客单次使用 · 结果不保存或上传',
   guestCount: 0,
 });
 function methods(wx) {
@@ -36,9 +38,6 @@ function methods(wx) {
       }
       this.setData({
         accountUser: user,
-        accountSubtitle: user
-          ? user.phoneMasked || '微信账号 · 未绑定手机号'
-          : '微信登录 / 手机号密码登录',
         accountStatus: user
           ? !this.account.active
             ? '登录已失效，请重新登录'
@@ -52,7 +51,7 @@ function methods(wx) {
           ? pending
             ? '本机有待同步记录'
             : '账号缓存 · 可手动同步'
-          : '游客记录仅本机保存',
+          : '游客单次使用 · 结果不保存或上传',
       });
     },
     accountIdle() {
@@ -73,7 +72,11 @@ function methods(wx) {
       await this.task(async () => {
         try {
           const caps = await this.account.capabilities();
-          this.setData({ phoneEnabled: caps.phoneEnabled === true });
+          this.setData({
+            phoneEnabled: caps.phoneEnabled === true,
+            usernameEnabled: caps.usernameEnabled === true,
+            registerMethod: 'username',
+          });
           if (this.account.user) {
             await this.account.verify();
             this.accountVerified = true;
@@ -94,12 +97,20 @@ function methods(wx) {
       this.clearAccountSecrets();
       this.setData({ accountView: e.currentTarget.dataset.view, accountAccepted: false });
     },
+    selectRegisterMethod(e) {
+      if (this.data.busy) return;
+      const method = e.currentTarget.dataset.method;
+      if (!['username', 'wechat'].includes(method)) return;
+      this.clearAccountSecrets();
+      this.setData({ registerMethod: method, accountAccepted: false });
+    },
     accountInput(e) {
       if (this.data.busy) return;
       const field = e.currentTarget.dataset.field;
       if (
         ![
           'phoneInput',
+          'usernameInput',
           'loginPassword',
           'currentPassword',
           'newPassword',
@@ -119,6 +130,7 @@ function methods(wx) {
       this.resetPhoneCode = null;
       this.setData({
         phoneInput: '',
+        usernameInput: '',
         loginPassword: '',
         currentPassword: '',
         newPassword: '',
@@ -160,12 +172,75 @@ function methods(wx) {
       });
       this.clearAccountSecrets();
     },
+    async registerWithPhone(e) {
+      if (
+        !this.accountIdle() ||
+        !this.foreground ||
+        this.data.accountView !== 'register' ||
+        this.data.registerMethod !== 'wechat'
+      )
+        return;
+      const { newPassword, confirmPassword, accountAccepted, phoneEnabled } = this.data;
+      const phoneCode = e.detail?.code;
+      await this.task(async () => {
+        if (!accountAccepted) throw new Error('请先阅读并同意账号与数据说明');
+        if (!phoneEnabled) throw new Error('运营方尚未开通微信手机号能力，暂不能注册');
+        if (!phoneCode) throw new Error('未授权手机号，注册未完成');
+        if (newPassword !== confirmPassword) throw new Error('两次密码不一致');
+        this.account.assertConfigured();
+        await Privacy.authorize(wx);
+        if (!this.foreground || !this.data.accountSheet || this.data.accountView !== 'register')
+          throw new Error('账号面板已关闭，本次操作已取消');
+        await this.account.register(phoneCode, newPassword, true);
+        this.accountVerified = true;
+        this.refreshAccount();
+        this.restoreAccountDraft();
+        this.refresh();
+        this.setData({ accountView: 'security', accountAccepted: false });
+        this.notify('注册成功，已登录');
+      });
+      this.clearAccountSecrets();
+    },
+    async submitUsername() {
+      if (!this.accountIdle() || !this.foreground) return;
+      const {
+        usernameInput,
+        loginPassword,
+        newPassword,
+        confirmPassword,
+        accountAccepted,
+        usernameEnabled,
+        accountView,
+        registerMethod,
+      } = this.data;
+      await this.task(async () => {
+        if (!usernameEnabled) throw new Error('账号密码服务尚未开放');
+        if (!accountAccepted) throw new Error('请先阅读并同意账号与数据说明');
+        const registering = accountView === 'register' && registerMethod === 'username';
+        if (registering && newPassword !== confirmPassword) throw new Error('两次密码不一致');
+        this.account.assertConfigured();
+        await Privacy.authorize(wx);
+        if (!this.foreground || !this.data.accountSheet || this.data.accountView !== accountView)
+          return;
+        if (registering) await this.account.usernameRegister(usernameInput, newPassword, true);
+        else await this.account.usernameLogin(usernameInput, loginPassword, true);
+        this.accountVerified = true;
+        this.refreshAccount();
+        this.restoreAccountDraft();
+        this.refresh();
+        this.setData({ accountView: 'security', accountAccepted: false });
+        this.notify(registering ? '注册成功，已登录' : '登录成功');
+        this.clearAccountSecrets();
+      });
+    },
     restoreAccountDraft() {
       this.sessionId = null;
+      this.guestSession = null;
+      this.completedSession = false;
       this.frameAt = 0;
       this.setData({ shots: 0, hits: 0, seconds: 0, state: 'idle', status: '' });
       this.updateNumbers();
-      const draft = wx.getStorageSync(this.account.draftKey());
+      const draft = this.account.user ? wx.getStorageSync(this.account.draftKey()) : null;
       if (draft && R.valid(draft)) {
         this.sessionId = draft.id;
         this.setData({
@@ -245,7 +320,7 @@ function methods(wx) {
         const result = await wx.showModal({
           title: '导入游客训练记录？',
           content:
-            '仅当这些记录属于你时确认。将复制到当前账号的待同步记录；原游客记录保留，不自动合并其他账号。',
+            '仅导入旧版本已保存的游客本机记录，不包含现在的单次训练。仅当这些记录属于你时确认；会复制到当前账号待同步记录，原件仍保留。',
           confirmText: '属于我，导入',
         });
         if (!result.confirm || !this.foreground) return;
@@ -260,7 +335,8 @@ function methods(wx) {
       await this.task(async () => {
         const result = await wx.showModal({
           title: '退出当前账号？',
-          content: '本机账号缓存和未同步记录仍按账号保留。退出后只显示游客数据。',
+          content:
+            '本机账号缓存和未同步记录仍按账号保留。退出后进入游客单次使用；旧版游客记录保留但不会自动展示或上传。',
         });
         if (!result.confirm || !this.foreground) return;
         await this.account.logout();
@@ -296,7 +372,7 @@ function methods(wx) {
         const result = await wx.showModal({
           title: '确认注销当前账号？',
           content:
-            '永久删除此账号、手机号绑定、密码及云端训练记录，所有会话失效。请先在本页重新微信登录（5 分钟内有效）；不影响游客数据。',
+            '永久删除此账号、登录凭据及云端训练记录，所有会话失效。请先重新登录微信或账号（5 分钟内有效）；不影响游客数据。',
           confirmText: '确认注销',
           confirmColor: '#b42318',
         });

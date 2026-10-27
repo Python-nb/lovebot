@@ -9,6 +9,8 @@ const files = [
   'lib/theme',
   'lib/privacy',
   'config/service',
+  'config/diagnostics',
+  'lib/diagnostics',
   'lib/account',
   'lib/account-page',
   'pages/index/index',

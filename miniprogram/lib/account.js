@@ -1,7 +1,7 @@
 const config = require('../config/service');
 const R = require('./records');
 const SESSION_KEY = 'courtside.account.session.v1';
-const CONSENT_VERSION = '2026-10-26-account-v1';
+const CONSENT_VERSION = '2026-10-26-account-v3';
 function validUser(user) {
   return (
     user &&
@@ -9,7 +9,8 @@ function validUser(user) {
     /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(user.id) &&
     typeof user.nickname === 'string' &&
     typeof user.hasPassword === 'boolean' &&
-    typeof user.phoneMasked === 'string'
+    typeof user.phoneMasked === 'string' &&
+    (user.username === undefined || typeof user.username === 'string')
   );
 }
 function passwordValid(value) {
@@ -71,7 +72,7 @@ class AccountClient {
     return value;
   }
   storage() {
-    if (!this.user) return this.api;
+    if (!this.user) throw new Error('游客训练仅限本次使用，不写入训练记录缓存');
     const key = this.key();
     return {
       getStorageSync: () => this.snapshot(key).rows,
@@ -92,7 +93,7 @@ class AccountClient {
   assertConfigured() {
     if (this.disposed) throw new Error('页面已关闭，本次操作已取消');
     if (!this.config.enabled || !this.config.env || !this.config.service)
-      throw new Error('账号服务尚未部署配置，暂不能登录');
+      throw new Error('账号服务尚未开放，暂不能登录');
     if (!this.api.cloud || typeof this.api.cloud.Cloud !== 'function')
       throw new Error('请在支持云托管的微信版本中使用');
   }
@@ -127,7 +128,7 @@ class AccountClient {
           'Content-Type': 'application/json',
           ...(auth ? { Authorization: `Bearer ${current.token}` } : {}),
         },
-        timeout: 1400,
+        timeout: path.endsWith('/register') ? 10000 : 1400,
       });
     } catch {
       throw new Error('服务连接未完成，结果可能已生效。请重新登录或同步核对，请勿连续提交');
@@ -166,6 +167,7 @@ class AccountClient {
         nickname: value.user.nickname,
         phoneMasked: value.user.phoneMasked,
         hasPassword: value.user.hasPassword,
+        username: value.user.username || '',
       },
     };
     try {
@@ -217,6 +219,55 @@ class AccountClient {
         '/auth/password',
         'POST',
         { phone, password, consentVersion: CONSENT_VERSION },
+        false,
+      ),
+    );
+  }
+  async register(phoneCode, password, accepted) {
+    this.assertConfigured();
+    if (!accepted) throw new Error('请先阅读并同意账号与数据说明');
+    if (!phoneCode || typeof phoneCode !== 'string') throw new Error('请先通过微信原生授权手机号');
+    if (!passwordValid(password)) throw new Error('密码需 10–64 位，包含字母和数字且不含空格');
+    if (!this.api.login) throw new Error('请在微信小程序内注册');
+    const generation = this.generation;
+    const login = await new Promise((resolve, reject) =>
+      this.api.login({ success: resolve, fail: () => reject(new Error('微信登录未完成，请重试')) }),
+    );
+    if (this.disposed || generation !== this.generation)
+      throw new Error('账号状态已变化，本次操作已取消');
+    if (!login.code) throw new Error('未获得微信登录凭证');
+    return this.persist(
+      await this.request(
+        '/auth/register',
+        'POST',
+        { code: login.code, phoneCode, password, consentVersion: CONSENT_VERSION },
+        false,
+      ),
+    );
+  }
+  async usernameRegister(username, password, accepted) {
+    if (!accepted) throw new Error('请先阅读并同意账号与数据说明');
+    if (!/^[A-Za-z][A-Za-z0-9_]{5,23}$/.test(username))
+      throw new Error('账号名须为 6–24 位，以字母开头，可含数字和下划线');
+    if (!passwordValid(password)) throw new Error('密码需 10–64 位，包含字母和数字且不含空格');
+    return this.persist(
+      await this.request(
+        '/auth/username/register',
+        'POST',
+        { username, password, consentVersion: CONSENT_VERSION },
+        false,
+      ),
+    );
+  }
+  async usernameLogin(username, password, accepted) {
+    if (!accepted) throw new Error('请先阅读并同意账号与数据说明');
+    if (!/^[A-Za-z][A-Za-z0-9_]{5,23}$/.test(username) || !password || password.length > 64)
+      throw new Error('请输入正确账号名和密码');
+    return this.persist(
+      await this.request(
+        '/auth/username',
+        'POST',
+        { username, password, consentVersion: CONSENT_VERSION },
         false,
       ),
     );

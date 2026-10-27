@@ -4,6 +4,7 @@ const T = require('../../lib/theme');
 const Privacy = require('../../lib/privacy');
 const AccountPage = require('../../lib/account-page');
 const { BleClient } = require('../../lib/ble');
+const { BleDiagnostics } = require('../../lib/diagnostics');
 const live = (state) => ['starting', 'running', 'stopping'].includes(state);
 const initial = () => ({
   ...AccountPage.initial(),
@@ -11,6 +12,8 @@ const initial = () => ({
   state: 'idle',
   busy: false,
   connected: false,
+  diagnosticAvailable: false,
+  diagnosticId: '',
   deviceName: '尚未连接设备',
   signalDbm: null,
   signalLevel: 0,
@@ -53,7 +56,7 @@ const initial = () => ({
   nickname: '球场新朋友',
   editName: false,
   nameInput: '',
-  sourceLabel: '设备训练记录',
+  sourceLabel: '本次设备训练 · 关闭后不保留',
   tabs: [
     { id: 'home', label: '首页', icon: 'ball-basketball' },
     { id: 'rank', label: '排行榜', icon: 'trophy' },
@@ -100,8 +103,13 @@ Page({
     this.initAccount();
     this.frameAt = 0;
     this.currentFrame = null;
+    this.idlePreview = false;
+    this.completedSession = false;
     this.timer = null;
     this.sessionId = null;
+    this.guestSession = null;
+    this.diagnostics = new BleDiagnostics(wx);
+    this.setData({ diagnosticAvailable: this.diagnostics.available });
     const now = new Date();
     this.setData({
       calendarMonth: now.getMonth(),
@@ -123,16 +131,18 @@ Page({
         this.setData({ devices: [...map.values()] });
       },
       scanEnd: () => this.setData({ scanning: false }),
+      diagnostic: (event, details) => this.diagnostics.record(event, details),
       frame: (frame) => this.receive(frame),
       disconnected: () => {
         this.stopSignalPolling();
+        this.clearIdlePreview();
         this.setData({ connected: false, deviceName: '连接已断开' });
         this.frameAt = 0;
         if (live(this.data.state))
           this.interrupt('蓝牙断开，请现场停止设备并核对最终数据。不会自动重连或重发指令。');
       },
     });
-    const draft = wx.getStorageSync(this.account.draftKey());
+    const draft = this.account.user ? wx.getStorageSync(this.account.draftKey()) : null;
     if (draft && R.valid(draft)) {
       this.sessionId = draft.id;
       this.setData({
@@ -155,8 +165,27 @@ Page({
   },
   onHide() {
     this.foreground = false;
+    clearTimeout(this.diagnosticTimer);
+    this.diagnostics.stop();
+    this.setData({ diagnosticId: '' });
     this.clearAccountSecrets();
     wx.hideToast();
+    if (this.data.state === 'idle') {
+      this.clearIdlePreview();
+      this.currentFrame = null;
+      this.frameAt = 0;
+    }
+    if (!this.account.user && this.guestSession && this.data.state === 'idle') {
+      this.guestSession = null;
+      this.setData({
+        shots: 0,
+        hits: 0,
+        seconds: 0,
+        status: '已离开小程序，本次游客结果不保留。',
+      });
+      this.updateNumbers();
+      this.refresh();
+    }
     this.stopSignalPolling();
     this.ble.stopScan();
     if (live(this.data.state)) {
@@ -170,6 +199,9 @@ Page({
   },
   onUnload() {
     this.foreground = false;
+    clearTimeout(this.diagnosticTimer);
+    this.diagnostics.stop();
+    this.guestSession = null;
     this.clearAccountSecrets();
     if (this.account) this.account.dispose();
     wx.hideToast();
@@ -223,6 +255,31 @@ Page({
   notify(title) {
     if (!this.foreground) return;
     wx.showToast({ title, icon: 'none', duration: 3000, mask: false });
+  },
+  async toggleDiagnostics() {
+    if (!this.diagnostics.available || this.data.busy) return;
+    if (this.diagnostics.active) {
+      clearTimeout(this.diagnosticTimer);
+      this.diagnostics.stop();
+      this.setData({ diagnosticId: '' });
+      return;
+    }
+    const result = await wx.showModal({
+      title: '开启蓝牙诊断？',
+      content:
+        '仅开发版、仅本次 5 分钟。请先开启，再重新连接设备并复现。采集连接与启动事件、时间、错误码及最多 3 条脱敏报文形状样本，上传到现有云环境中的独立诊断服务；不采集完整设备标识、账号或训练记录。可随时关闭。',
+      confirmText: '开启诊断',
+    });
+    if (!result.confirm || !this.foreground) return;
+    const id = this.diagnostics.start();
+    if (id) {
+      this.setData({ diagnosticId: id });
+      this.diagnosticTimer = setTimeout(() => {
+        if (this.data.diagnosticId !== id) return;
+        this.diagnostics.stop();
+        this.setData({ diagnosticId: '' });
+      }, 5 * 60000);
+    }
   },
   startSignalPolling() {
     this.stopSignalPolling();
@@ -294,6 +351,8 @@ Page({
     };
   },
   checkpoint() {
+    // Guest training is deliberately memory-only. Leave legacy guest drafts untouched.
+    if (!this.account.user) return;
     try {
       wx.setStorageSync(this.account.draftKey(), this.draft());
       this.draftStorageFailed = false;
@@ -303,9 +362,36 @@ Page({
       this.draftStorageFailed = true;
     }
   },
+  clearIdlePreview() {
+    if (!this.idlePreview) return;
+    this.idlePreview = false;
+    this.setData({ shots: 0, hits: 0, seconds: 0, status: '暂无设备回传。' });
+    this.updateNumbers();
+  },
+  showIdleFrame(frame) {
+    if (
+      this.data.state !== 'idle' ||
+      !this.data.connected ||
+      !this.foreground ||
+      this.guestSession ||
+      this.completedSession
+    )
+      return false;
+    this.idlePreview = true;
+    this.setData({
+      shots: frame.shots,
+      hits: frame.hits,
+      seconds: frame.seconds,
+      status: '已收到设备回传 · 尚未开始训练，当前数值不是本次成绩。',
+    });
+    this.updateNumbers();
+    return true;
+  },
   receive(frame) {
+    if (!this.foreground && this.data.state === 'idle') return;
     this.currentFrame = frame;
     this.frameAt = Date.now();
+    if (this.showIdleFrame(frame)) return;
     if (['starting', 'running', 'stopping'].includes(this.data.state)) {
       this.setData({ shots: frame.shots, hits: frame.hits, seconds: frame.seconds });
       this.updateNumbers();
@@ -316,10 +402,11 @@ Page({
   async start() {
     if (this.data.state !== 'idle') return;
     await this.task(async () => {
+      this.diagnostics.record('start_requested');
       const { mode } = this.data;
       const target = mode === 'time' ? this.data.targetTime : this.data.targetCount;
       const command = P.setupCommand(mode, target);
-      this.assertDeviceReady(mode);
+      this.assertDeviceReady(mode, 'before_confirm');
       const result = await wx.showModal({
         title: '确认现场安全',
         content:
@@ -328,8 +415,14 @@ Page({
       });
       if (!result.confirm || !this.foreground) return;
       // 确认弹窗可能停留较久，发指令前重新核验连接和回传。
-      this.assertDeviceReady(mode);
+      this.assertDeviceReady(mode, 'before_send');
+      if (!this.account.user && this.guestSession) {
+        this.guestSession = null;
+        this.refresh();
+      }
       this.sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this.idlePreview = false;
+      this.completedSession = false;
       this.setData({ state: 'starting', shots: 0, hits: 0, seconds: 0, status: '正在发送指令…' });
       this.updateNumbers();
       this.checkpoint();
@@ -346,18 +439,27 @@ Page({
       wx.setKeepScreenOn({ keepScreenOn: true });
       this.timer = setInterval(() => {
         if (this.data.state === 'running' && Date.now() - this.frameAt > 3500) {
+          this.diagnostics.record('receive_timeout');
           if (this.ble.ready) this.ble.send('Turn-off').catch(() => {});
           this.interrupt('超过 3.5 秒未收到回传，已尝试停止；请现场核对设备和数据。');
         }
       }, 1000);
     });
   },
-  assertDeviceReady(mode) {
-    if (!this.ble.ready) throw new Error('蓝牙未连接，无法开始训练。请先连接发球机。');
-    if (!this.currentFrame || Date.now() - this.frameAt > 3500)
+  assertDeviceReady(mode, phase = 'before_confirm') {
+    if (!this.ble.ready) {
+      this.diagnostics.record('gate_blocked', { phase, code: 1 });
+      throw new Error('蓝牙未连接，无法开始训练。请先连接发球机。');
+    }
+    if (!this.currentFrame || Date.now() - this.frameAt > 3500) {
+      this.diagnostics.record('gate_blocked', { phase, code: 2 });
       throw new Error('尚无新鲜设备回传，请检查设备通知连接。');
-    if (mode === 'free' && this.currentFrame.mode !== 0)
+    }
+    if (mode === 'free' && this.currentFrame.mode !== 0) {
+      this.diagnostics.record('gate_blocked', { phase, code: 3 });
       throw new Error('协议没有切回自由模式的指令，请先在机器端切回自由模式。');
+    }
+    this.diagnostics.record('gate_ok', { phase });
   },
   checkLimit() {
     const { mode, seconds, shots, targetTime, targetCount } = this.data;
@@ -381,7 +483,12 @@ Page({
         return;
       }
       if (this.data.state !== 'stopping') return;
-      this.setData({ state: 'review', status: '停止指令已发送，请核对设备和最终数据后保存。' });
+      this.setData({
+        state: 'review',
+        status: this.account.user
+          ? '停止指令已发送，请核对设备和最终数据后保存。'
+          : '停止指令已发送，请现场核对。本次结果仅在当前运行期间显示。',
+      });
       this.checkpoint();
       wx.setKeepScreenOn({ keepScreenOn: false });
     });
@@ -396,25 +503,34 @@ Page({
   },
   async confirmSave() {
     await this.task(async () => {
+      const signedIn = !!this.account.user;
       const res = await wx.showModal({
-        title: '现场确认后保存',
-        content: `请确认机器已经停止。当前回传 ${this.data.shots} 球 / 进球 ${this.data.hits} / ${this.data.clock}。协议未说明计数清零和时长单位，需现场核对。数据不符请取消，不要保存为最终成绩。`,
-        confirmText: '已核对并保存',
-        cancelText: '暂不保存',
+        title: signedIn ? '现场确认后保存' : '现场确认本次结果',
+        content: `请确认机器已经停止。当前回传 ${this.data.shots} 球 / 进球 ${this.data.hits} / ${this.data.clock}。协议未说明计数清零和时长单位，需现场核对。${signedIn ? '数据不符请取消，不要保存为最终成绩。' : '游客结果仅在本次运行期间显示，不保存本机或上传；数据不符请取消。'}`,
+        confirmText: signedIn ? '已核对并保存' : '已核对本次',
+        cancelText: signedIn ? '暂不保存' : '暂不确认',
       });
-      if (!res.confirm) return;
+      if (!res.confirm || !this.foreground) return;
       const row = {
         ...this.draft(),
         verifiedByUser: true,
         interrupted: this.data.state === 'interrupted',
       };
-      R.save(this.account.storage(), row);
-      wx.removeStorageSync(this.account.draftKey());
+      if (signedIn) {
+        R.save(this.account.storage(), row);
+        wx.removeStorageSync(this.account.draftKey());
+      } else this.guestSession = row;
       this.sessionId = null;
-      this.setData({ state: 'idle', status: '训练已保存。下一次，继续突破。' });
+      this.completedSession = true;
+      this.setData({
+        state: 'idle',
+        status: signedIn
+          ? '训练已保存。下一次，继续突破。'
+          : '本次已核对 · 仅当前运行期间可见，关闭后不保留。',
+      });
       this.refresh();
       this.refreshAccount();
-      wx.showToast({ title: '已保存到本机', icon: 'success' });
+      this.notify(signedIn ? '已保存到本机' : '本次已核对，未保存');
     });
   },
   async discard() {
@@ -422,20 +538,23 @@ Page({
     await this.task(async () => {
       const res = await wx.showModal({
         title: '放弃本次未保存训练？',
-        content:
-          '请先现场确认机器已停止。只删除本次未保存草稿，不发送任何蓝牙指令，也不影响历史记录。',
+        content: this.account.user
+          ? '请先现场确认机器已停止。只删除本次未保存草稿，不发送任何蓝牙指令，也不影响历史记录。'
+          : '请先现场确认机器已停止。将放弃本次内存中的结果，不发送任何蓝牙指令；旧版游客本机记录不受影响。',
         confirmText: '已停止，放弃',
         cancelText: '保留草稿',
       });
       if (!res.confirm) return;
-      wx.removeStorageSync(this.account.draftKey());
+      if (this.account.user) wx.removeStorageSync(this.account.draftKey());
       this.sessionId = null;
       this.setData({
         state: 'idle',
         shots: 0,
         hits: 0,
         seconds: 0,
-        status: '本次草稿已放弃，历史记录未改变。',
+        status: this.account.user
+          ? '本次草稿已放弃，历史记录未改变。'
+          : '本次结果已放弃，未保存训练记录。',
       });
       this.updateNumbers();
       this.refresh();
@@ -471,6 +590,8 @@ Page({
       if (!device) throw new Error('设备已不在列表，请重新搜索');
       this.frameAt = 0;
       this.currentFrame = null;
+      this.clearIdlePreview();
+      this.completedSession = false;
       this.stopSignalPolling();
       this.setData({ connected: false, deviceName: '尚未连接设备' });
       await this.ble.connect(device);
@@ -480,6 +601,10 @@ Page({
         deviceSheet: false,
         status: '已连接，等待设备数据。',
       });
+      // A frame can arrive during notification subscription before the page marks connected.
+      // Show only a still-fresh real frame; do not renew its timestamp for the start gate.
+      if (this.currentFrame && Date.now() - this.frameAt <= 3500)
+        this.showIdleFrame(this.currentFrame);
       this.startSignalPolling();
       this.refresh();
     });
@@ -494,6 +619,7 @@ Page({
       await this.ble.disconnect();
       this.frameAt = 0;
       this.currentFrame = null;
+      this.clearIdlePreview();
       this.setData({ connected: false, deviceName: '尚未连接设备' });
     });
   },
@@ -515,7 +641,11 @@ Page({
     this.refresh();
   },
   refresh() {
-    const rows = R.load(this.account.storage());
+    const rows = this.account.user
+      ? R.load(this.account.storage())
+      : this.guestSession
+        ? [this.guestSession]
+        : [];
     const visible = rows.filter((r) => r.endedAt >= R.since(this.data.days));
     const count = this.data.days === 365 ? 12 : this.data.days;
     // 年视图聚合到月；避免 365 个不可触达的细柱。
@@ -573,7 +703,7 @@ Page({
       points,
       chartMax: metric === 'seconds' ? Math.round(max / 60) : max,
       chartUnit: metric === 'rate' ? '%' : metric === 'seconds' ? '分钟' : '球',
-      sourceLabel: '设备训练记录',
+      sourceLabel: this.account.user ? '账号设备训练记录' : '本次设备训练 · 关闭后不保留',
     });
     this.buildCalendar(rows);
   },
@@ -686,13 +816,14 @@ Page({
         title: '删除本机训练记录？',
         content: this.account.user
           ? '仅删除当前账号的本机缓存和待同步记录，不删除云端记录，下次同步可下载云端已有记录。不影响游客及其他账号。'
-          : '将删除游客本机全部已保存成绩，且无法恢复。不修改昵称或外观，不发送蓝牙指令。',
+          : '仅删除旧版游客本机留存的成绩，且无法恢复；本次内存结果不会因此删除。不修改昵称或外观，不发送蓝牙指令。',
         confirmText: '确认删除',
         confirmColor: '#b42318',
         cancelText: '取消',
       });
       if (!result.confirm || !this.foreground || this.data.state !== 'idle') return;
-      this.account.storage().removeStorageSync(R.KEY);
+      if (this.account.user) this.account.storage().removeStorageSync(R.KEY);
+      else wx.removeStorageSync(R.KEY);
       this.refresh();
       this.refreshAccount();
       this.notify('本机训练记录已删除');

@@ -160,6 +160,50 @@ test('foreign device/service notifications ignored', async () => {
   h.handlers.value(event);
   assert.equal(frames, 1);
 });
+test('BLE diagnosis distinguishes subscription, raw callback, valid frame and write result', async () => {
+  const h = mock(),
+    observed = [];
+  const client = new BleClient(h.api, {
+    diagnostic: (event, detail) => observed.push([event, detail]),
+  });
+  await client.connect({ deviceId: 'test' });
+  h.handlers.value({
+    deviceId: 'test',
+    serviceId: UUID.service,
+    characteristicId: UUID.tx,
+    value: encode('101,3,2,10,0,0,9,'),
+  });
+  await client.send('Turn-on');
+  assert.deepEqual(
+    observed.map(([event]) => event),
+    ['notify_ok', 'connection_ready', 'notify_raw', 'frame_valid', 'write_ok'],
+  );
+  assert.equal(observed[2][1].length, 17);
+  assert.match(observed[2][1].sample, /^[a-f0-9]{2,48}$/);
+  assert.equal(Buffer.from(observed[2][1].sample, 'hex').toString(), 'xxx,x,x,xx,x,x,x,');
+  assert.equal(observed[4][1].phase, 'start');
+  assert.doesNotMatch(JSON.stringify(observed), /test|Turn-on/);
+});
+test('diagnostic callback failures cannot block notification handling or the single control write', async () => {
+  const h = mock();
+  let frames = 0;
+  const client = new BleClient(h.api, {
+    diagnostic: () => {
+      throw new Error('diagnostic offline');
+    },
+    frame: () => frames++,
+  });
+  await client.connect({ deviceId: 'test' });
+  h.handlers.value({
+    deviceId: 'test',
+    serviceId: UUID.service,
+    characteristicId: UUID.tx,
+    value: encode('101,3,2,10,0,0,9,'),
+  });
+  await client.send('Turn-on');
+  assert.equal(frames, 1);
+  assert.equal(h.calls.filter(([name]) => name === 'writeBLECharacteristicValue').length, 1);
+});
 test('disconnected BLE cannot send', async () => {
   const h = mock();
   const client = new BleClient(h.api);

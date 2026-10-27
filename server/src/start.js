@@ -12,11 +12,14 @@ let pool;
   migrationConfig();
   if (process.env.DB_AUTO_MIGRATE === 'true') {
     const result = await runMigrations();
-    console.log(`Schema ready: applied=${result.applied.length}, skipped=${result.skipped.length}`);
+    console.log(
+      `Schema ready: applied=${result.applied.length}, skipped=${result.skipped.length}, deferred=${result.deferred?.length || 0}`,
+    );
   }
   pool = mysql.createPool(poolConfig());
   const store = new MysqlStore(pool);
   await store.ready();
+  if (cfg.usernameEnabled) await store.readyUsername();
   const app = createApp({ ...cfg, store, wechat: createWechat(cfg) });
   // Match the cloud service's configured 8080 probe even if PORT is inherited.
   const server = app.listen(8080, '0.0.0.0', () =>

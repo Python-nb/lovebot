@@ -10,6 +10,7 @@ function config(env = process.env) {
     appSecret: env.WECHAT_APP_SECRET,
     identityKey: Buffer.from(env.IDENTITY_HMAC_KEY, 'hex'),
     phoneEnabled: env.WECHAT_PHONE_ENABLED === 'true',
+    usernameEnabled: env.USERNAME_AUTH_ENABLED === 'true',
   };
 }
 function poolConfig(env = process.env) {
@@ -52,7 +53,12 @@ function migrationConfig(env = process.env) {
     password = env.MYSQL_MIGRATION_PASSWORD;
   if (!!user !== !!password)
     throw new Error('Both MYSQL_MIGRATION_USER and MYSQL_MIGRATION_PASSWORD are required');
-  for (const key of ['DB_AUTO_MIGRATE', 'DB_CREATE_DATABASE'])
+  for (const key of [
+    'DB_AUTO_MIGRATE',
+    'DB_CREATE_DATABASE',
+    'DB_ALLOW_USERNAME_MIGRATION',
+    'USERNAME_AUTH_ENABLED',
+  ])
     if (env[key] !== undefined && !['true', 'false'].includes(env[key]))
       throw new Error(`Invalid ${key}`);
   return {

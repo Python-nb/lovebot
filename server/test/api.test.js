@@ -116,7 +116,13 @@ test('WeChat login creates a real server session and repeated same identity maps
     b = await f.login();
   assert.equal(a.user.id, b.user.id);
   assert.notEqual(a.token, b.token);
-  assert.deepEqual(Object.keys(a.user).sort(), ['hasPassword', 'id', 'nickname', 'phoneMasked']);
+  assert.deepEqual(Object.keys(a.user).sort(), [
+    'hasPassword',
+    'id',
+    'nickname',
+    'phoneMasked',
+    'username',
+  ]);
   assert.equal((await f.api('get', '/v1/me', a)).body.user.id, a.user.id);
   assert.doesNotMatch(JSON.stringify(a), /session_key|openid|wechatKey|passwordHash/);
 });
@@ -133,6 +139,141 @@ test('missing consent, fake wx code and spoofed identity headers cannot log in',
     400,
   );
   assert.equal((await request(f.app).get('/v1/me').set('X-WX-OPENID', 'wx-a')).status, 401);
+});
+test('registration requires verified WeChat identity and native phone code before password login', async () => {
+  const f = fixture();
+  const register = (data) => request(f.app).post('/v1/auth/register').send(data);
+  const input = {
+    code: 'wx-a',
+    phoneCode: 'verified-phone',
+    password,
+    consentVersion: CONSENT_VERSION,
+  };
+  assert.equal((await register({ ...input, phoneCode: undefined, phone })).status, 400);
+  assert.equal((await register({ ...input, code: 'fake' })).status, 400);
+  const created = await register(input);
+  assert.equal(created.status, 200);
+  assert.equal(created.body.user.phoneMasked, '138****0000');
+  assert.equal(created.body.user.hasPassword, true);
+  const login = await request(f.app)
+    .post('/v1/auth/password')
+    .send({ phone, password, consentVersion: CONSENT_VERSION });
+  assert.equal(login.status, 200);
+  assert.equal(login.body.user.id, created.body.user.id);
+});
+test('registration upgrades the same WeChat account but never merges a number owned elsewhere', async () => {
+  const f = fixture();
+  const initial = await f.login();
+  const input = {
+    code: 'wx-a',
+    phoneCode: 'verified-phone',
+    password,
+    consentVersion: CONSENT_VERSION,
+  };
+  const registered = await request(f.app).post('/v1/auth/register').send(input);
+  assert.equal(registered.status, 200);
+  assert.equal(registered.body.user.id, initial.user.id);
+  assert.equal((await f.api('get', '/v1/me', initial)).status, 401);
+  assert.equal((await request(f.app).post('/v1/auth/register').send(input)).status, 409);
+  const other = await request(f.app)
+    .post('/v1/auth/register')
+    .send({ ...input, code: 'wx-b' });
+  assert.equal(other.status, 409);
+  assert.equal((await f.login('wx-b')).user.hasPassword, false);
+});
+test('registration is unavailable without the native phone capability and does not create an account', async () => {
+  const f = fixture({ phoneEnabled: false });
+  const result = await request(f.app).post('/v1/auth/register').send({
+    code: 'wx-a',
+    phoneCode: 'verified-phone',
+    password,
+    consentVersion: CONSENT_VERSION,
+  });
+  assert.equal(result.status, 403);
+  assert.equal(f.store.users.size, 0);
+  assert.deepEqual(f.calls, []);
+});
+test('username registration and login work without phone or WeChat identity', async () => {
+  const f = fixture({ phoneEnabled: false, usernameEnabled: true });
+  const register = await request(f.app).post('/v1/auth/username/register').send({
+    username: 'CourtPlayer',
+    password,
+    consentVersion: CONSENT_VERSION,
+  });
+  assert.equal(register.status, 200);
+  assert.equal(register.body.user.username, 'courtplayer');
+  assert.equal(register.body.user.phoneMasked, '');
+  assert.equal(register.body.user.hasPassword, true);
+  const login = await request(f.app).post('/v1/auth/username').send({
+    username: 'COURTPLAYER',
+    password,
+    consentVersion: CONSENT_VERSION,
+  });
+  assert.equal(login.status, 200);
+  assert.equal(login.body.user.id, register.body.user.id);
+  assert.deepEqual(f.calls, []);
+  assert.doesNotMatch(JSON.stringify(register.body), /TestingOnly12345|wechatKey|usernameKey/);
+});
+test('username collisions, missing consent and failed authentication do not merge users', async () => {
+  const f = fixture({ usernameEnabled: true });
+  const input = { username: 'CourtPlayer', password, consentVersion: CONSENT_VERSION };
+  assert.equal((await request(f.app).post('/v1/auth/username').send({})).status, 400);
+  assert.equal(
+    (
+      await request(f.app)
+        .post('/v1/auth/username/register')
+        .send({ ...input, consentVersion: undefined })
+    ).status,
+    400,
+  );
+  const created = await request(f.app).post('/v1/auth/username/register').send(input);
+  assert.equal(created.status, 200);
+  assert.equal(
+    (
+      await request(f.app)
+        .post('/v1/auth/username/register')
+        .send({ ...input, username: 'courtplayer' })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await request(f.app)
+        .post('/v1/auth/username')
+        .send({ ...input, password: 'WrongPassword123' })
+    ).status,
+    401,
+  );
+  assert.equal(f.store.users.size, 1);
+  const wechat = await f.login();
+  assert.notEqual(wechat.user.id, created.body.user.id);
+});
+test('username password changes revoke old sessions and deletion needs a recent login', async () => {
+  const f = fixture({ usernameEnabled: true });
+  const registered = await request(f.app)
+    .post('/v1/auth/username/register')
+    .send({ username: 'CourtPlayer', password, consentVersion: CONSENT_VERSION });
+  const changed = await f.api('put', '/v1/account/password', registered.body, {
+    password: 'NewPassword12345',
+    currentPassword: password,
+  });
+  assert.equal(changed.status, 200);
+  assert.equal((await f.api('get', '/v1/me', registered.body)).status, 401);
+  assert.equal((await f.api('get', '/v1/me', changed.body)).status, 200);
+  f.advance(300001);
+  assert.equal(
+    (await f.api('delete', '/v1/account', changed.body, { confirm: 'DELETE_ACCOUNT' })).status,
+    403,
+  );
+  const fresh = await request(f.app).post('/v1/auth/username').send({
+    username: 'courtplayer',
+    password: 'NewPassword12345',
+    consentVersion: CONSENT_VERSION,
+  });
+  assert.equal(
+    (await f.api('delete', '/v1/account', fresh.body, { confirm: 'DELETE_ACCOUNT' })).status,
+    200,
+  );
 });
 test('phone binding needs a fresh WeChat session and a verified code, never a typed phone', async () => {
   const f = fixture(),

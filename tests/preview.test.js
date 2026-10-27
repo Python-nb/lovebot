@@ -111,6 +111,43 @@ test('device telemetry, explicit save, rank and chart share real records', async
   assert.ok(h.document.querySelector('.calendar-day.trained'));
   assert.equal(h.errors.length, 0);
 });
+test('connected idle device telemetry is visible without starting or saving a training session', () => {
+  const h = harness();
+  h.page.setData({ connected: true, deviceName: 'T1.2' });
+  h.page.receive({ shots: 3, hits: 2, seconds: 10, mode: 0 });
+  const home = h.document.querySelector('.session-card');
+  assert.match(home.textContent, /3\s*球/);
+  assert.match(home.textContent, /2\s*球/);
+  assert.match(home.textContent, /00:00:10/);
+  assert.match(h.document.querySelector('.home-page').textContent, /已收到设备回传/);
+  assert.equal(h.page.data.state, 'idle');
+  assert.equal(h.page.data.records.length, 0);
+  assert.equal(h.errors.length, 0, String(h.errors[0]));
+});
+test('diagnostic opt-in control stays hidden by default and exposes only a session ID when configured', async () => {
+  const h = harness();
+  assert.equal(h.document.querySelector('.diagnostic-panel'), null);
+  h.page.diagnostics = {
+    available: true,
+    active: false,
+    start() {
+      this.active = true;
+      return 'a'.repeat(24);
+    },
+    stop() {
+      this.active = false;
+    },
+    record() {},
+  };
+  h.page.setData({ diagnosticAvailable: true });
+  h.click('.diagnostic-toggle');
+  assert.ok(h.document.getElementById('dialog').hasAttribute('open'));
+  h.click('#dialog-confirm');
+  await flush();
+  assert.match(h.document.querySelector('.diagnostic-panel').textContent, /本次诊断编号：a{24}/);
+  h.click('.diagnostic-toggle');
+  assert.equal(h.page.data.diagnosticId, '');
+});
 test('no simulated mode or generated scores in any shipped page', async () => {
   const h = harness();
   for (const tab of ['home', 'rank', 'stats', 'profile']) {
@@ -222,7 +259,7 @@ test('data explanation is readable, links the official contract and can be dismi
   const h = harness();
   h.click('.nav-item[data-id="profile"]');
   h.click('.setting-row:last-child');
-  assert.equal(h.document.querySelectorAll('.data-section').length, 7);
+  assert.equal(h.document.querySelectorAll('.data-section').length, 8);
   assert.match(h.document.querySelector('.data-sheet').textContent, /正式.*隐私保护指引/);
   h.click('.data-sheet .close-button');
   assert.equal(h.document.querySelector('.data-sheet'), null);
@@ -343,28 +380,125 @@ test('native layout guards v2 button defaults and bottom safe area', () => {
   assert.match(css, /padding-bottom:\s*calc\(152rpx \+ env\(safe-area-inset-bottom\)\)/);
   assert.match(css, /@media \(max-width:\s*350px\)/);
 });
-test('login sheet has unchecked consent, real native phone entry and no browser fake login', async () => {
+test('login sheet has unchecked consent, username entry and no browser fake login', async () => {
   const h = harness();
   h.click('.nav-item[data-id="profile"]');
-  h.click('.account-entry');
+  const avatar = h.document.querySelector('.avatar-entry');
+  assert.equal(avatar.getAttribute('aria-label'), '点击头像登录');
+  assert.equal(h.document.querySelector('.account-card'), null);
+  assert.match(h.document.querySelector('.profile-card').textContent, /未登录 · 点击头像登录/);
+  h.click('.avatar-entry');
   await flush();
   assert.ok(h.document.querySelector('.account-sheet'));
+  assert.match(h.document.querySelector('.account-sheet .section-title').textContent, /登录爱冠篮/);
   assert.equal(h.document.querySelector('.consent-toggle').getAttribute('aria-checked'), 'false');
   assert.equal(h.document.querySelector('.account-primary').disabled, true);
   assert.equal(h.document.querySelector('#login-phone'), null);
   h.click('.account-tabs [data-view="password"]');
-  assert.ok(h.document.querySelector('#login-phone'));
+  assert.match(h.document.querySelector('.account-sheet .section-title').textContent, /登录爱冠篮/);
+  assert.ok(h.document.querySelector('#login-username'));
   assert.equal(h.document.querySelector('#login-password').type, 'password');
   h.click('.account-text-button');
   assert.equal(h.document.querySelector('#login-password').type, 'text');
   h.click('.consent-toggle');
+  h.page.setData({
+    usernameEnabled: true,
+    usernameInput: 'CourtPlayer',
+    loginPassword: 'Password12345',
+  });
   h.click('.account-primary');
   await flush();
   assert.equal(h.page.data.accountUser, null);
-  assert.match(h.document.getElementById('toast').textContent, /尚未部署/);
+  assert.match(h.document.getElementById('toast').textContent, /尚未开放/);
   h.click('.account-links button:last-child');
   assert.ok(h.document.querySelector('.data-sheet:not(.account-sheet)'));
   assert.equal(h.errors.length, 0, String(h.errors[0]));
+});
+test('avatar registration uses a native phone button and stays unavailable without phone capability', async () => {
+  const h = harness();
+  h.click('.nav-item[data-id="profile"]');
+  h.click('.avatar-entry');
+  await flush();
+  h.click('.account-tabs [data-view="register"]');
+  h.page.setData({ registerMethod: 'wechat' });
+  assert.equal(h.document.querySelector('#login-phone'), null);
+  assert.ok(h.document.querySelector('#register-password'));
+  assert.equal(h.document.querySelector('[bindgetphonenumber="registerWithPhone"]'), null);
+  assert.match(h.document.querySelector('.account-sheet').textContent, /尚未开通/);
+  h.page.setData({
+    phoneEnabled: true,
+    accountAccepted: true,
+    newPassword: 'Password12345',
+    confirmPassword: 'Password12345',
+  });
+  const register = h.document.querySelector('.account-primary');
+  assert.ok(register);
+  assert.equal(register.disabled, false);
+  assert.match(register.textContent, /授权手机号并注册/);
+  assert.match(
+    fs.readFileSync(path.join(__dirname, '../miniprogram/pages/index/index.wxml'), 'utf8'),
+    /open-type="getPhoneNumber"\s+bindgetphonenumber="registerWithPhone"/,
+  );
+  assert.equal(h.errors.length, 0, String(h.errors[0]));
+});
+test('username registration and login render without phone permission and preserve consent gate', async () => {
+  const h = harness();
+  h.click('.nav-item[data-id="profile"]');
+  h.click('.avatar-entry');
+  await flush();
+  h.page.setData({ usernameEnabled: true, phoneEnabled: false });
+  h.click('.account-tabs [data-view="register"]');
+  assert.match(h.document.querySelector('.account-sheet .section-title').textContent, /注册爱冠篮/);
+  assert.ok(h.document.querySelector('#register-username'));
+  assert.ok(h.document.querySelector('#username-new-password'));
+  assert.equal(h.document.querySelector('#register-password'), null);
+  assert.equal(h.document.querySelector('.account-primary').disabled, true);
+  h.click('.account-tabs [data-view="password"]');
+  assert.ok(h.document.querySelector('#login-username'));
+  assert.equal(h.document.querySelector('#username-new-password'), null);
+  assert.equal(h.errors.length, 0, String(h.errors[0]));
+});
+test('profile avatar manages an existing account while nickname editing stays separate', async () => {
+  const h = harness();
+  h.click('.nav-item[data-id="profile"]');
+  h.click('.edit-button');
+  assert.equal(h.document.querySelector('.account-sheet'), null);
+  assert.ok(h.document.getElementById('dialog').hasAttribute('open'));
+  h.click('#dialog-cancel');
+  await flush();
+  h.page.account.session = {
+    token: 'a'.repeat(64),
+    expiresAt: Date.now() + 60000,
+    user: {
+      id: '00000000-0000-4000-8000-000000000001',
+      nickname: '验收账号',
+      phoneMasked: '',
+      hasPassword: false,
+    },
+  };
+  h.page.refreshAccount();
+  const avatar = h.document.querySelector('.avatar-entry');
+  assert.equal(avatar.getAttribute('aria-label'), '打开账号与安全');
+  assert.match(h.document.querySelector('.profile-card').textContent, /点击头像管理账号/);
+  h.click('.avatar-entry');
+  assert.equal(h.page.data.accountView, 'security');
+  assert.ok(h.document.querySelector('.account-sheet'));
+  assert.match(h.document.querySelector('.account-sheet').textContent, /同步本人训练记录/);
+  await flush();
+  assert.equal(h.errors.length, 0, String(h.errors[0]));
+});
+test('profile avatar keeps a touch target of at least 44px in both themes', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../miniprogram/app.wxss'), 'utf8');
+  assert.match(css, /\.app-shell \.avatar-entry\s*\{[^}]*width:\s*56px;[^}]*height:\s*56px/);
+  assert.match(css, /\.app-shell \.avatar-entry\s*\{[^}]*var\(--accent-border\)/);
+  const h = harness();
+  h.click('.nav-item[data-id="profile"]');
+  h.page.setData({ theme: 'dark' });
+  assert.equal(
+    h.document.querySelector('.avatar-entry').getAttribute('aria-label'),
+    '点击头像登录',
+  );
+  assert.equal(h.document.querySelector('.account-card'), null);
 });
 test('account security and reset branches are exclusive and credentials clear on hide', () => {
   const h = harness();

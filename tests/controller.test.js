@@ -5,10 +5,21 @@ const vm = require('node:vm');
 const path = require('node:path');
 const { createRequire } = require('node:module');
 const filename = path.join(__dirname, '../miniprogram/pages/index/index.js');
+const accountId = '00000000-0000-4000-8000-000000000001';
+const signedIn = () => ({
+  token: 'a'.repeat(64),
+  expiresAt: Date.now() + 3600000,
+  user: { id: accountId, nickname: '训练者', phoneMasked: '', hasPassword: false },
+});
 function harness(draft, options = {}) {
   let page;
   const storage = new Map();
-  if (draft) storage.set('courtside.draft.v1', draft);
+  if (options.account) storage.set('courtside.account.session.v1', signedIn());
+  if (draft)
+    storage.set(
+      options.account ? `courtside.account.${accountId}.draft.v1` : 'courtside.draft.v1',
+      draft,
+    );
   if (options.preference) storage.set('courtside.theme.v1', options.preference);
   let systemTheme = options.systemTheme || 'light';
   const events = {},
@@ -51,6 +62,8 @@ function harness(draft, options = {}) {
       return id;
     },
     clearInterval: (id) => intervals.delete(id),
+    setTimeout: () => next++,
+    clearTimeout: () => {},
     console,
   });
   page.setData = (patch) => Object.assign(page.data, patch);
@@ -100,7 +113,7 @@ test('official privacy guide opens via WeChat and failure never pretends it is c
   assert.match(h.toasts.at(-1).title, /暂不可用/);
 });
 test('data deletion is confirmed, scoped to records, and forbidden during training', async () => {
-  const h = harness();
+  const h = harness(undefined, { account: true });
   await h.page.start();
   h.page.receive({ shots: 2, hits: 1, seconds: 6, mode: 0 });
   await h.page.finish();
@@ -117,14 +130,14 @@ test('data deletion is confirmed, scoped to records, and forbidden during traini
   h.page.setData({ state: 'idle' });
   await h.page.deleteRecords();
   assert.equal(h.page.data.records.length, 0);
-  assert.equal(h.storage.has('courtside.records.v1'), false);
+  assert.equal(h.storage.has(`courtside.account.${accountId}.records.v1`), false);
   assert.equal(h.storage.get('courtside.nickname'), '保留昵称');
   assert.equal(h.storage.get('courtside.theme.v1'), 'dark');
   assert.deepEqual(h.sent, sent);
   assert.match(h.toasts.at(-1).title, /已删除/);
 });
 test('failed deletion retains records and does not show a success message', async () => {
-  const h = harness();
+  const h = harness(undefined, { account: true });
   await h.page.start();
   await h.page.finish();
   h.wx.removeStorageSync = () => {
@@ -162,7 +175,7 @@ test('theme persistence failure does not pretend success; unload removes listene
   h.page.onUnload();
   assert.equal(h.events.theme, undefined);
 });
-test('device lifecycle saves only received telemetry and clears watchdog', async () => {
+test('guest device lifecycle keeps only confirmed telemetry in memory and clears watchdog', async () => {
   const h = harness();
   await h.page.start();
   assert.equal(h.page.data.state, 'running');
@@ -177,6 +190,84 @@ test('device lifecycle saves only received telemetry and clears watchdog', async
   assert.deepEqual(h.sent, ['Turn-on', 'Turn-off']);
   assert.equal(h.page.data.records[0].source, 'ble');
   assert.equal(h.page.data.records[0].hits, 8);
+  assert.equal(h.storage.has('courtside.records.v1'), false);
+  assert.equal(h.storage.has('courtside.draft.v1'), false);
+});
+test('idle preview clears stale numbers on manual disconnect without saving a record', async () => {
+  const h = harness();
+  h.page.setData({ connected: true });
+  h.page.receive({ shots: 3, hits: 2, seconds: 10, mode: 0 });
+  assert.equal(h.page.data.shots, 3);
+  await h.page.disconnect();
+  assert.equal(h.page.data.connected, false);
+  assert.equal(h.page.data.shots, 0);
+  assert.equal(h.page.data.clock, '00:00:00');
+  assert.equal(h.page.data.records.length, 0);
+  assert.deepEqual(h.sent, []);
+});
+test('the first frame delivered during subscription is visible after connection resolves', async () => {
+  const h = harness();
+  const firstFrame = { shots: 3, hits: 2, seconds: 10, mode: 0, target: 0 };
+  h.page.setData({ devices: [{ deviceId: 'test', name: 'T1.2' }] });
+  h.page.ble.connect = async () => h.page.receive(firstFrame);
+  await h.page.connectDevice({ currentTarget: { dataset: { id: 'test' } } });
+  assert.equal(h.page.data.connected, true);
+  assert.equal(h.page.data.shots, 3);
+  assert.equal(h.page.data.hits, 2);
+  assert.match(h.page.data.status, /已收到设备回传/);
+  assert.equal(h.page.data.records.length, 0);
+  assert.deepEqual(h.sent, []);
+});
+test('a delayed connection cannot make its earlier frame fresh for the start gate', async () => {
+  const h = harness();
+  h.page.setData({ devices: [{ deviceId: 'test', name: 'T1.2' }] });
+  h.page.ble.connect = async () => {
+    h.page.receive({ shots: 3, hits: 2, seconds: 10, mode: 0, target: 0 });
+    h.page.frameAt = Date.now() - 4000;
+  };
+  await h.page.connectDevice({ currentTarget: { dataset: { id: 'test' } } });
+  assert.equal(h.page.data.shots, 0);
+  assert.match(h.page.data.status, /等待设备数据/);
+  await h.page.start();
+  assert.deepEqual(h.sent, []);
+  assert.match(h.toasts.at(-1).title, /新鲜设备回传/);
+});
+test('idle preview is invalidated when hidden and needs a fresh frame before start', async () => {
+  const h = harness();
+  h.page.setData({ connected: true });
+  h.page.receive({ shots: 3, hits: 2, seconds: 10, mode: 0 });
+  h.page.onHide();
+  assert.equal(h.page.data.shots, 0);
+  h.page.onShow();
+  await h.page.start();
+  assert.equal(h.page.data.state, 'idle');
+  assert.deepEqual(h.sent, []);
+  assert.match(h.toasts.at(-1).title, /新鲜设备回传/);
+});
+test('idle device updates never replace an already confirmed guest result', async () => {
+  const h = harness();
+  h.page.setData({ connected: true });
+  await h.page.start();
+  h.page.receive({ shots: 4, hits: 3, seconds: 12, mode: 0 });
+  await h.page.finish();
+  assert.equal(h.page.data.state, 'idle');
+  assert.equal(h.page.data.shots, 4);
+  h.page.receive({ shots: 5, hits: 4, seconds: 15, mode: 0 });
+  assert.equal(h.page.data.shots, 4);
+  assert.equal(h.page.data.records.length, 1);
+  assert.equal(h.page.data.records[0].shots, 4);
+});
+test('idle device updates never replace a saved account result on the screen', async () => {
+  const h = harness(undefined, { account: true });
+  h.page.setData({ connected: true });
+  await h.page.start();
+  h.page.receive({ shots: 4, hits: 3, seconds: 12, mode: 0 });
+  await h.page.finish();
+  assert.equal(h.page.data.state, 'idle');
+  assert.equal(h.page.data.records[0].shots, 4);
+  h.page.receive({ shots: 5, hits: 4, seconds: 15, mode: 0 });
+  assert.equal(h.page.data.shots, 4);
+  assert.equal(h.page.data.records[0].shots, 4);
 });
 test('production has no simulation entry and cannot start without device', async () => {
   const h = harness();
@@ -200,6 +291,29 @@ test('real start requires fresh telemetry', async () => {
   assert.match(h.toasts.at(-1).title, /新鲜/);
   assert.equal(h.sent.length, 0);
 });
+test('opted-in trace distinguishes blocked start from sent start and receive timeout', async () => {
+  const h = harness(),
+    events = [];
+  h.page.diagnostics = { record: (event, details) => events.push([event, details]) };
+  h.page.currentFrame = null;
+  await h.page.start();
+  assert.deepEqual(
+    events.map(([event]) => event),
+    ['start_requested', 'gate_blocked'],
+  );
+  assert.deepEqual(h.sent, []);
+  h.page.receive({ shots: 0, hits: 0, seconds: 0, mode: 0 });
+  await h.page.start();
+  assert.deepEqual(events.map(([event]) => event).slice(-3), [
+    'start_requested',
+    'gate_ok',
+    'gate_ok',
+  ]);
+  h.page.frameAt = Date.now() - 4000;
+  [...h.intervals.values()][0]();
+  assert.equal(events.at(-1)[0], 'receive_timeout');
+  assert.deepEqual(h.sent, ['Turn-on', 'Turn-off']);
+});
 test('navigation, hide and unload dismiss transient notices', async () => {
   const h = harness();
   h.page.ble.ready = false;
@@ -220,7 +334,7 @@ test('navigation, hide and unload dismiss transient notices', async () => {
   assert.equal(h.toasts.length, shown);
 });
 test('draft write failure is notified once until storage recovers', async () => {
-  const h = harness();
+  const h = harness(undefined, { account: true });
   await h.page.start();
   const write = h.wx.setStorageSync;
   h.wx.setStorageSync = () => {
@@ -380,7 +494,7 @@ test('failed setup write is never replayed and never followed by Turn-on', async
   assert.equal(h.sent.length, 1);
 });
 test('real command order and explicit user-confirmed save', async () => {
-  const h = harness();
+  const h = harness(undefined, { account: true });
   h.page.setData({ demo: false, mode: 'time' });
   h.page.currentFrame = { mode: 0 };
   h.page.frameAt = Date.now();
@@ -391,7 +505,7 @@ test('real command order and explicit user-confirmed save', async () => {
   assert.equal(h.page.data.records[0].verifiedByUser, true);
 });
 test('background transition stops once, preserves draft, never auto-resumes', async () => {
-  const h = harness();
+  const h = harness(undefined, { account: true });
   h.page.setData({ demo: false });
   h.page.currentFrame = { mode: 0 };
   h.page.frameAt = Date.now();
@@ -401,7 +515,7 @@ test('background transition stops once, preserves draft, never auto-resumes', as
   assert.deepEqual(h.sent, ['Turn-on', 'Turn-off']);
   assert.equal(h.page.data.state, 'interrupted');
   assert.equal(h.intervals.size, 0);
-  assert.ok(h.storage.has('courtside.draft.v1'));
+  assert.ok(h.storage.has(`courtside.account.${accountId}.draft.v1`));
 });
 test('background during setup never issues a late Turn-on', async () => {
   const h = harness();
@@ -427,16 +541,16 @@ test('background during setup never issues a late Turn-on', async () => {
   assert.equal(h.page.data.state, 'interrupted');
 });
 test('cancel save retains draft and review state', async () => {
-  const h = harness();
+  const h = harness(undefined, { account: true });
   await h.page.start();
   h.wx.showModal = async () => ({ confirm: false });
   await h.page.finish();
   assert.equal(h.page.data.state, 'review');
   assert.equal(h.page.data.records.length, 0);
-  assert.ok(h.storage.has('courtside.draft.v1'));
+  assert.ok(h.storage.has(`courtside.account.${accountId}.draft.v1`));
 });
 test('discard removes only unsaved draft, no replay or history loss', async () => {
-  const h = harness();
+  const h = harness(undefined, { account: true });
   await h.page.start();
   await h.page.finish();
   await h.page.start();
@@ -444,11 +558,11 @@ test('discard removes only unsaved draft, no replay or history loss', async () =
   await h.page.discard();
   assert.equal(h.page.data.state, 'idle');
   assert.equal(h.page.data.records.length, 1);
-  assert.equal(h.storage.has('courtside.draft.v1'), false);
+  assert.equal(h.storage.has(`courtside.account.${accountId}.draft.v1`), false);
   assert.deepEqual(h.sent, ['Turn-on', 'Turn-off', 'Turn-on', 'Turn-off']);
 });
 test('failed persistence never reports completed save', async () => {
-  const h = harness();
+  const h = harness(undefined, { account: true });
   await h.page.start();
   h.wx.setStorageSync = () => {
     throw Error('disk full');
@@ -457,16 +571,19 @@ test('failed persistence never reports completed save', async () => {
   assert.equal(h.page.data.state, 'review');
   assert.match(h.toasts.at(-1).title, /disk full/);
 });
-test('recovered draft requires review without any command send', () => {
-  const h = harness({
-    id: 'draft',
-    source: 'ble',
-    mode: 'free',
-    shots: 3,
-    hits: 2,
-    seconds: 9,
-    endedAt: Date.now(),
-  });
+test('recovered account draft requires review without any command send', () => {
+  const h = harness(
+    {
+      id: 'draft',
+      source: 'ble',
+      mode: 'free',
+      shots: 3,
+      hits: 2,
+      seconds: 9,
+      endedAt: Date.now(),
+    },
+    { account: true },
+  );
   assert.equal(h.page.data.state, 'interrupted');
   assert.equal(h.sent.length, 0);
   assert.equal(h.page.data.shots, 3);
@@ -489,6 +606,72 @@ test('legacy simulated drafts and records never become production training', () 
   assert.equal(h.page.data.state, 'idle');
   assert.equal(h.page.data.shots, 0);
   assert.deepEqual(h.storage.get('courtside.draft.v1'), legacy);
+});
+test('legacy guest records and draft remain intact but do not enter single-use views', async () => {
+  const old = {
+    id: 'legacy-ble',
+    source: 'ble',
+    mode: 'free',
+    shots: 4,
+    hits: 3,
+    seconds: 10,
+    endedAt: Date.now(),
+    verifiedByUser: true,
+  };
+  const h = harness(old);
+  h.storage.set('courtside.records.v1', [old]);
+  h.page.refresh();
+  h.page.refreshAccount();
+  assert.equal(h.page.data.records.length, 0);
+  assert.equal(h.page.data.guestCount, 1);
+  assert.equal(h.page.data.state, 'idle');
+  await h.page.start();
+  h.page.receive({ shots: 2, hits: 1, seconds: 6, mode: 0 });
+  h.page.onHide();
+  assert.deepEqual(h.storage.get('courtside.draft.v1'), old);
+  h.page.onShow();
+  await h.page.confirmSave();
+  assert.equal(h.page.data.records[0].shots, 2);
+  assert.deepEqual(h.storage.get('courtside.records.v1'), [old]);
+  h.page.ble.dispose = () => {};
+  h.page.onUnload();
+  assert.equal(h.storage.has('courtside.records.v1'), true);
+});
+test('guest result disappears on next training or account switch without cloud requests', async () => {
+  const h = harness();
+  h.wx.cloud = {
+    Cloud: class {
+      constructor() {
+        throw Error('guest must not connect cloud');
+      }
+    },
+  };
+  await h.page.start();
+  h.page.receive({ shots: 3, hits: 2, seconds: 7, mode: 0 });
+  await h.page.finish();
+  assert.equal(h.page.data.records.length, 1);
+  assert.equal(h.storage.has('courtside.records.v1'), false);
+  await h.page.start();
+  assert.equal(h.page.data.records.length, 0);
+  h.page.onHide();
+  await h.page.discard();
+  assert.equal(h.storage.has('courtside.draft.v1'), false);
+  h.page.restoreAccountDraft();
+  assert.equal(h.page.guestSession, null);
+});
+test('confirmed guest result clears when leaving the mini program without touching storage', async () => {
+  const h = harness();
+  await h.page.start();
+  h.page.receive({ shots: 3, hits: 2, seconds: 7, mode: 0 });
+  await h.page.finish();
+  assert.equal(h.page.data.records.length, 1);
+  h.page.onHide();
+  assert.equal(h.page.data.records.length, 0);
+  assert.equal(h.storage.has('courtside.records.v1'), false);
+  assert.equal(h.storage.has('courtside.draft.v1'), false);
+  h.page.onShow();
+  assert.equal(h.page.data.total.sessions, 0);
+  assert.equal(h.page.data.shots, 0);
 });
 test('all WXML event handlers exist and dynamic conditionals use bindings', () => {
   const h = harness();

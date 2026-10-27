@@ -16,8 +16,14 @@ module.exports = [
     },
   },
   {
-    files: ['scripts/**/*.js', 'tests/**/*.js', 'server/**/*.js', 'eslint.config.js'],
-    languageOptions: { globals: globals.node },
+    files: [
+      'scripts/**/*.js',
+      'tests/**/*.js',
+      'server/**/*.js',
+      'diagnostics/**/*.js',
+      'eslint.config.js',
+    ],
+    languageOptions: { globals: { ...globals.node, fetch: 'readonly' } },
   },
   {
     files: ['miniprogram/**/*.js'],
